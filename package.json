@@ -1,0 +1,87 @@
+{
+  "name": "kira-ai-launcher",
+  "productName": "KiraAI Launcher",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "dev": "tsc -p electron/tsconfig.json && concurrently -k \"vite\" \"npm:watch:electron\" \"npm:electron\"",
+    "watch:electron": "tsc -p electron/tsconfig.json --watch",
+    "electron": "wait-on tcp:5173 && electron .",
+    "build": "vue-tsc -b && vite build && tsc -p electron/tsconfig.json",
+    "preview": "vite preview",
+    "pack": "npm run build && electron-builder --dir",
+    "dist": "npm run build && electron-builder --publish never",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:linux": "npm run build && electron-builder --linux --publish never",
+    "publish": "npm run build && electron-builder --publish always"
+  },
+  "dependencies": {
+    "@vicons/ionicons5": "^0.12.0",
+    "electron-updater": "^6.7.3",
+    "naive-ui": "^2.40.1",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@vitejs/plugin-vue": "^5.2.1",
+    "concurrently": "^9.1.0",
+    "electron": "^33.2.1",
+    "electron-builder": "^24.13.3",
+    "typescript": "~5.6.3",
+    "vite": "^6.0.1",
+    "vue-tsc": "^2.2.0",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.kiraai.launcher",
+    "productName": "KiraAI Launcher",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "KiraAI-Dev",
+        "repo": "KiraAI-Launcher",
+        "releaseType": "release"
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "linux": {
+      "icon": "public/icon.png",
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Development"
+    }
+  }
+}
