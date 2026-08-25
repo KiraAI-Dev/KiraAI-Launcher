@@ -193,6 +193,9 @@ function updaterText() {
 
 function configureAutoUpdater() {
   if (isDev) return
+  // Windows update metadata has no architecture suffix. Keep ARM64 on a dedicated channel
+  // so it cannot download the x64 installer from the shared GitHub release.
+  if (process.platform === 'win32' && process.arch === 'arm64') autoUpdater.channel = 'latest-arm64'
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.on('update-downloaded', () => {
