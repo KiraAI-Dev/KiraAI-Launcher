@@ -32,3 +32,26 @@ export const messages = {
 } as const
 
 export type Language = keyof typeof messages
+
+export const projectAdvancedSettingsMessages = {
+  'zh-CN': {
+    title: '高级设置',
+    subtitle: '仅在下次启动本地项目时生效。',
+    launchArgs: '附加启动参数',
+    launchArgsHint: '按命令行格式填写，例如 --env dev；含空格的值请用引号包裹。',
+    environmentVariables: '环境变量',
+    environmentVariablesHint: '每行填写一个 KEY=VALUE',
+    launchArgsInvalid: '启动参数无效，请检查每行内容。',
+    environmentVariablesInvalid: '环境变量无效，请使用 KEY=VALUE 格式。',
+  },
+  'en-US': {
+    title: 'Advanced settings',
+    subtitle: 'Changes apply the next time the local project starts.',
+    launchArgs: 'Additional launch arguments',
+    launchArgsHint: 'Enter arguments in command-line form, for example --env dev. Quote values that contain spaces.',
+    environmentVariables: 'Environment variables',
+    environmentVariablesHint: 'Enter one KEY=VALUE entry per line.',
+    launchArgsInvalid: 'The launch arguments are invalid. Check each line.',
+    environmentVariablesInvalid: 'The environment variables are invalid. Use the KEY=VALUE format.',
+  },
+} as const

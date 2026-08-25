@@ -30,6 +30,8 @@ type ManagedProject = {
   projectPath?: string
   url?: string
   port?: number
+  launchArgs?: string[]
+  environmentVariables?: Record<string, string>
   version?: string
   runtimeStartedAt?: number
   createdAt: string
@@ -252,6 +254,9 @@ function sanitizeProject(value: unknown): StoredProject | null {
   if (typeof candidate.id !== 'string' || typeof candidate.name !== 'string' || (type !== 'local' && type !== 'cloud')) return null
   if (type === 'local' && typeof candidate.projectPath !== 'string') return null
   if (type === 'cloud' && typeof candidate.url !== 'string') return null
+  const launchArgs = sanitizeLaunchArgs(candidate.launchArgs)
+  const environmentVariables = sanitizeEnvironmentVariables(candidate.environmentVariables)
+  if (launchArgs === null || environmentVariables === null) return null
   return {
     id: candidate.id,
     name: candidate.name,
@@ -259,11 +264,28 @@ function sanitizeProject(value: unknown): StoredProject | null {
     projectPath: candidate.projectPath,
     url: candidate.url,
     port: typeof candidate.port === 'number' ? candidate.port : undefined,
+    launchArgs,
+    environmentVariables,
     encryptedAccessToken: typeof candidate.encryptedAccessToken === 'string'
       ? candidate.encryptedAccessToken
       : undefined,
     createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
   }
+}
+
+function sanitizeLaunchArgs(value: unknown): string[] | null {
+  if (typeof value === 'undefined') return []
+  if (!Array.isArray(value) || value.length > 128) return null
+  if (value.some((argument) => typeof argument !== 'string' || argument.length > 4_096 || argument.includes('\0'))) return null
+  return [...value]
+}
+
+function sanitizeEnvironmentVariables(value: unknown): Record<string, string> | null {
+  if (typeof value === 'undefined') return {}
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  const entries = Object.entries(value)
+  if (entries.length > 128 || entries.some(([key, variableValue]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof variableValue !== 'string' || variableValue.length > 16_384 || variableValue.includes('\0'))) return null
+  return Object.fromEntries(entries)
 }
 
 function toManagedProject(project: StoredProject): ManagedProject {
@@ -869,7 +891,12 @@ async function startLocalProject(id: string): Promise<void> {
 
   await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt'], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
 
-  const child = spawn(venvPythonPath, ['main.py'], { cwd: project.projectPath, windowsHide: true, stdio: 'ignore' })
+  const child = spawn(venvPythonPath, ['main.py', ...project.launchArgs ?? []], {
+    cwd: project.projectPath,
+    env: { ...process.env, ...project.environmentVariables },
+    windowsHide: true,
+    stdio: 'ignore',
+  })
   launchedProjects.set(id, child)
   child.once('exit', () => launchedProjects.delete(id))
   child.once('error', () => launchedProjects.delete(id))
@@ -1070,11 +1097,15 @@ async function saveLocalWebuiPort(projectPath: string, port: number): Promise<vo
 
 async function updateProject(value: unknown): Promise<ManagedProject> {
   if (typeof value !== 'object' || value === null) throw new Error('PROJECT_SETTINGS_INVALID')
-  const { id, name, port, url, accessToken } = value as { id?: unknown; name?: unknown; port?: unknown; url?: unknown; accessToken?: unknown }
+  const { id, name, port, url, accessToken, launchArgs, environmentVariables } = value as { id?: unknown; name?: unknown; port?: unknown; url?: unknown; accessToken?: unknown; launchArgs?: unknown; environmentVariables?: unknown }
   if (typeof id !== 'string' || typeof name !== 'string') throw new Error('PROJECT_SETTINGS_INVALID')
   if (typeof accessToken !== 'undefined' && typeof accessToken !== 'string') throw new Error('PROJECT_SETTINGS_INVALID')
   const projectName = name.trim()
   if (!projectName) throw new Error('PROJECT_NAME_REQUIRED')
+  const safeLaunchArgs = sanitizeLaunchArgs(launchArgs)
+  if (safeLaunchArgs === null) throw new Error('PROJECT_LAUNCH_ARGUMENTS_INVALID')
+  const safeEnvironmentVariables = sanitizeEnvironmentVariables(environmentVariables)
+  if (safeEnvironmentVariables === null) throw new Error('PROJECT_ENVIRONMENT_VARIABLES_INVALID')
 
   const projects = await loadProjects()
   const projectIndex = projects.findIndex((project) => project.id === id)
@@ -1087,7 +1118,7 @@ async function updateProject(value: unknown): Promise<ManagedProject> {
     if (launchedProjects.has(project.id) && port !== project.port) throw new Error('PROJECT_RUNNING')
     if (!project.projectPath) throw new Error('LOCAL_PROJECT_NOT_FOUND')
     if (port !== project.port) await saveLocalWebuiPort(project.projectPath, port)
-    updatedProject = { ...project, name: projectName, port }
+    updatedProject = { ...project, name: projectName, port, launchArgs: safeLaunchArgs, environmentVariables: safeEnvironmentVariables }
   } else {
     if (typeof url !== 'string') throw new Error('PROJECT_SETTINGS_INVALID')
     const normalizedUrl = await verifyCloudProject(url)

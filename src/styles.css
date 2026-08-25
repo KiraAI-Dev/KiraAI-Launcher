@@ -44,6 +44,8 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .managed-project-actions { display: flex; align-items: center; gap: 4px; }
 .project-modal { width: min(640px, calc(100vw - 48px)); }
 .project-settings-token { margin-top: 24px; }
+.project-advanced-settings { margin-top: 4px; }
+.project-advanced-settings .modal-hint { margin: 0 0 16px; }
 .project-source-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .project-source-option { display: flex; min-height: 160px; padding: 18px; flex-direction: column; align-items: flex-start; gap: 10px; border: 1px solid var(--n-border-color); border-radius: 8px; color: var(--n-text-color); background: transparent; cursor: pointer; text-align: left; transition: border-color .15s ease, background-color .15s ease; }
 .project-source-option:hover { border-color: var(--accent-color); background: var(--n-hover-color); }

@@ -2,7 +2,7 @@
 import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { darkTheme, enUS, NButton, NDialogProvider, NIcon, NMessageProvider, NTag, useDialog, useMessage, zhCN } from 'naive-ui'
 import type { DataTableColumns, MenuOption } from 'naive-ui'
-import { messages, type Language } from './i18n/messages'
+import { messages, projectAdvancedSettingsMessages, type Language } from './i18n/messages'
 import { AddOutline, CloudOutline, CloudUploadOutline, CodeSlashOutline, CubeOutline, DownloadOutline, FolderOpenOutline, HardwareChipOutline, HomeOutline, InformationCircleOutline, LanguageOutline, LayersOutline, MoonOutline, OpenOutline, PlayOutline, RefreshOutline, RocketOutline, SettingsOutline, StopOutline, SunnyOutline, TrashOutline } from '@vicons/ionicons5'
 
 type ViewKey = 'overview' | 'projects' | 'deployments' | 'environment' | 'settings' | 'about'
@@ -37,6 +37,8 @@ const projectSettingsName = ref('')
 const projectSettingsPort = ref<number | null>(null)
 const projectSettingsUrl = ref('')
 const projectSettingsAccessToken = ref('')
+const projectSettingsLaunchArgs = ref('')
+const projectSettingsEnvironmentVariables = ref('')
 const projectSettingsSaving = ref(false)
 const projectsRefreshing = ref(false)
 const updateChecking = ref(false)
@@ -69,6 +71,7 @@ const aboutText = computed(() => t.value.aboutText)
 const projectActionText = computed(() => t.value.projectActions)
 const localizedErrors = computed(() => t.value.errors)
 const projectSettingsErrors = computed(() => t.value.projectSettingsErrors)
+const projectAdvancedSettingsText = computed(() => projectAdvancedSettingsMessages[language.value])
 const localPortUnavailableMessage = computed(() => t.value.localPortUnavailable)
 const bridgeUnavailableMessage = computed(() => t.value.bridgeUnavailable)
 const palettes = {
@@ -158,6 +161,8 @@ function getErrorMessage(error: unknown) {
   if (!(error instanceof Error)) return t.value.operationFailed
   if (error.message === "BRIDGE_UNAVAILABLE") return bridgeUnavailableMessage.value
   if (error.message === 'LOCAL_PORT_UNAVAILABLE') return localPortUnavailableMessage.value
+  if (error.message === 'PROJECT_LAUNCH_ARGUMENTS_INVALID') return projectAdvancedSettingsText.value.launchArgsInvalid
+  if (error.message === 'PROJECT_ENVIRONMENT_VARIABLES_INVALID') return projectAdvancedSettingsText.value.environmentVariablesInvalid
   if (error.message in projectSettingsErrors.value) return projectSettingsErrors.value[error.message as keyof typeof projectSettingsErrors.value]
   if (["CLOUD_AUTH_CONFIG_INVALID", "CLOUD_LOGIN_FAILED", "CLOUD_OVERVIEW_UNAVAILABLE", "CLOUD_OVERVIEW_INVALID", "CLOUD_VERSION_UNAVAILABLE", "CLOUD_VERSION_INVALID"].includes(error.message)) return localizedErrors.value.CLOUD_WEBUI_UNAVAILABLE
   if (!(error.message in localizedErrors.value)) return t.value.operationFailed
@@ -346,7 +351,72 @@ function openProjectSettings(project: ManagedProject) {
   projectSettingsPort.value = project.type === 'local' ? project.port ?? 5267 : null
   projectSettingsUrl.value = project.type === 'cloud' ? project.url ?? '' : ''
   projectSettingsAccessToken.value = ''
+  projectSettingsLaunchArgs.value = (project.launchArgs ?? []).map(formatLaunchArgument).join(' ')
+  projectSettingsEnvironmentVariables.value = Object.entries(project.environmentVariables ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
   showProjectSettingsModal.value = true
+}
+
+function formatLaunchArgument(argument: string) {
+  if (argument && !/[\s'"\\]/.test(argument)) return argument
+  if (!argument.includes("'")) return `'${argument}'`
+  return `"${argument.replace(/(["\\])/g, '\\$1')}"`
+}
+
+function parseProjectSettingsLaunchArgs() {
+  const args: string[] = []
+  let argument = ''
+  let quote: '"' | "'" | null = null
+  let hasArgument = false
+  const input = projectSettingsLaunchArgs.value
+  for (let index = 0; index < input.length; index += 1) {
+    const character = input[index]
+    if (quote) {
+      if (character === quote) {
+        quote = null
+      } else if (quote === '"' && character === '\\' && (input[index + 1] === '"' || input[index + 1] === '\\')) {
+        argument += input[index + 1]
+        index += 1
+      } else {
+        argument += character
+      }
+      hasArgument = true
+      continue
+    }
+    if (character === '"' || character === "'") {
+      quote = character
+      hasArgument = true
+    } else if (/\s/.test(character)) {
+      if (hasArgument) {
+        args.push(argument)
+        argument = ''
+        hasArgument = false
+      }
+    } else if (character === '\\' && (input[index + 1] === '"' || input[index + 1] === "'" || input[index + 1] === '\\' || /\s/.test(input[index + 1] ?? ''))) {
+      argument += input[index + 1]
+      index += 1
+      hasArgument = true
+    } else {
+      argument += character
+      hasArgument = true
+    }
+  }
+  if (quote) throw new Error('PROJECT_LAUNCH_ARGUMENTS_INVALID')
+  if (hasArgument) args.push(argument)
+  return args
+}
+
+function parseProjectSettingsEnvironmentVariables() {
+  const variables: Record<string, string> = {}
+  for (const line of projectSettingsEnvironmentVariables.value.split(/\r?\n/)) {
+    if (!line.trim()) continue
+    const separator = line.indexOf('=')
+    const key = line.slice(0, separator).trim()
+    if (separator <= 0 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || Object.prototype.hasOwnProperty.call(variables, key)) {
+      throw new Error('PROJECT_ENVIRONMENT_VARIABLES_INVALID')
+    }
+    variables[key] = line.slice(separator + 1)
+  }
+  return variables
 }
 
 async function saveProjectSettings() {
@@ -356,7 +426,7 @@ async function saveProjectSettings() {
   projectError.value = ''
   try {
     const updatedProject = project.type === 'local'
-      ? await requireLauncherBridge().projects.update({ id: project.id, name: projectSettingsName.value, port: projectSettingsPort.value })
+      ? await requireLauncherBridge().projects.update({ id: project.id, name: projectSettingsName.value, port: projectSettingsPort.value, launchArgs: parseProjectSettingsLaunchArgs(), environmentVariables: parseProjectSettingsEnvironmentVariables() })
       : await requireLauncherBridge().projects.update({ id: project.id, name: projectSettingsName.value, url: projectSettingsUrl.value, accessToken: projectSettingsAccessToken.value || undefined })
     upsertManagedProject(updatedProject)
     showProjectSettingsModal.value = false
@@ -479,7 +549,7 @@ onBeforeUnmount(() => {
       <n-space v-else vertical :size="18"><n-form label-placement="top"><n-form-item :label="t.cloudName"><n-input v-model:value="cloudProjectName" :placeholder="t.cloudName" /></n-form-item><n-form-item :label="t.cloudUrl"><n-input v-model:value="cloudProjectUrl" placeholder="https://kira.example.com" /></n-form-item><n-form-item :label="cloudConnectionText.accessToken"><n-input v-model:value="cloudAccessToken" type="password" show-password-on="click" autocomplete="off" /><template #feedback>{{ cloudConnectionText.accessTokenHint }}</template></n-form-item></n-form><p class="modal-hint">{{ t.cloudHint }}</p><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="actionInProgress" @click="projectCreationMode = null">{{ t.back }}</n-button><n-button type="primary" :disabled="!cloudProjectName.trim() || !cloudProjectUrl.trim()" :loading="actionInProgress" @click="connectCloudProject">{{ t.connectInstance }}</n-button></n-space></n-space>
       </n-modal>
       <n-modal v-model:show="showProjectSettingsModal" preset="card" :title="t.projectSettings" class="project-modal" :mask-closable="!projectSettingsSaving">
-        <n-space v-if="editingProject" vertical :size="18"><p class="modal-hint">{{ t.projectSettingsSub }}</p><n-form label-placement="top"><n-form-item :label="t.projectName"><n-input v-model:value="projectSettingsName" :placeholder="t.projectName" /></n-form-item><n-form-item v-if="editingProject.type === 'local'" :label="t.webuiPort"><n-input-number v-model:value="projectSettingsPort" :min="1" :max="65535" :show-button="false" style="width: 100%" /><template #feedback>{{ t.webuiPortSub }}</template></n-form-item><template v-else><n-form-item :label="t.cloudUrl"><n-input v-model:value="projectSettingsUrl" placeholder="https://kira.example.com" /><template #feedback>{{ t.cloudUrlSub }}</template></n-form-item><n-form-item class="project-settings-token" :label="cloudConnectionText.accessToken"><n-input v-model:value="projectSettingsAccessToken" type="password" show-password-on="click" autocomplete="off" /><template #feedback>{{ cloudConnectionText.accessTokenUpdateHint }}</template></n-form-item></template></n-form><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="projectSettingsSaving" @click="showProjectSettingsModal = false">{{ t.cancel }}</n-button><n-button type="primary" :disabled="!projectSettingsName.trim() || (editingProject.type === 'local' ? projectSettingsPort === null : !projectSettingsUrl.trim())" :loading="projectSettingsSaving" @click="saveProjectSettings">{{ t.save }}</n-button></n-space></n-space>
+        <n-space v-if="editingProject" vertical :size="18"><p class="modal-hint">{{ t.projectSettingsSub }}</p><n-form label-placement="top"><n-form-item :label="t.projectName"><n-input v-model:value="projectSettingsName" :placeholder="t.projectName" /></n-form-item><template v-if="editingProject.type === 'local'"><n-form-item :label="t.webuiPort"><n-input-number v-model:value="projectSettingsPort" :min="1" :max="65535" :show-button="false" style="width: 100%" /><template #feedback>{{ t.webuiPortSub }}</template></n-form-item><n-collapse class="project-advanced-settings"><n-collapse-item :title="projectAdvancedSettingsText.title" name="advanced"><p class="modal-hint">{{ projectAdvancedSettingsText.subtitle }}</p><n-form-item :label="projectAdvancedSettingsText.launchArgs"><n-input v-model:value="projectSettingsLaunchArgs" placeholder="--env dev" /><template #feedback>{{ projectAdvancedSettingsText.launchArgsHint }}</template></n-form-item><n-form-item :label="projectAdvancedSettingsText.environmentVariables"><n-input v-model:value="projectSettingsEnvironmentVariables" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" /><template #feedback>{{ projectAdvancedSettingsText.environmentVariablesHint }}</template></n-form-item></n-collapse-item></n-collapse></template><template v-else><n-form-item :label="t.cloudUrl"><n-input v-model:value="projectSettingsUrl" placeholder="https://kira.example.com" /><template #feedback>{{ t.cloudUrlSub }}</template></n-form-item><n-form-item class="project-settings-token" :label="cloudConnectionText.accessToken"><n-input v-model:value="projectSettingsAccessToken" type="password" show-password-on="click" autocomplete="off" /><template #feedback>{{ cloudConnectionText.accessTokenUpdateHint }}</template></n-form-item></template></n-form><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="projectSettingsSaving" @click="showProjectSettingsModal = false">{{ t.cancel }}</n-button><n-button type="primary" :disabled="!projectSettingsName.trim() || (editingProject.type === 'local' ? projectSettingsPort === null : !projectSettingsUrl.trim())" :loading="projectSettingsSaving" @click="saveProjectSettings">{{ t.save }}</n-button></n-space></n-space>
       </n-modal>
     </n-message-provider>
     </n-dialog-provider>
