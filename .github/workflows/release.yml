@@ -25,7 +25,7 @@ jobs:
       - run: npm run dist:win
       - name: Remove unpacked application
         shell: pwsh
-        run: Remove-Item -LiteralPath release/win-unpacked -Recurse -Force -ErrorAction SilentlyContinue
+        run: Remove-Item -LiteralPath release/win-unpacked, release/win-arm64-unpacked -Recurse -Force -ErrorAction SilentlyContinue
       - uses: actions/upload-artifact@v4
         with:
           name: release-windows
@@ -60,7 +60,7 @@ jobs:
           iconutil -c icns build/icon.iconset -o build/icon.icns
       - run: npm run dist:mac
       - name: Remove unpacked application
-        run: rm -rf release/mac
+        run: rm -rf release/mac release/mac-arm64
       - uses: actions/upload-artifact@v4
         with:
           name: release-macos
@@ -81,7 +81,7 @@ jobs:
         run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --ignore-scripts
       - run: npm run dist:linux
       - name: Remove unpacked application
-        run: rm -rf release/linux-unpacked
+        run: rm -rf release/linux-unpacked release/linux-arm64-unpacked
       - uses: actions/upload-artifact@v4
         with:
           name: release-linux
