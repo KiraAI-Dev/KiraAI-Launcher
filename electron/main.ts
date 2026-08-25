@@ -1,14 +1,18 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell, Tray } from 'electron'
-import { autoUpdater } from 'electron-updater'
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
+import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
+import type { AppUpdater } from 'electron-updater'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const require = createRequire(import.meta.url)
+// electron-updater is CommonJS, so ESM named imports are not reliable at runtime.
+const { autoUpdater } = require('electron-updater') as { autoUpdater: AppUpdater }
 const isDev = !app.isPackaged
 app.setName('KiraAI Launcher')
 
