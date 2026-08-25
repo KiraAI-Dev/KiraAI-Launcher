@@ -127,6 +127,8 @@ const MAX_ARCHIVE_SIZE = 512 * 1024 * 1024
 const MAX_EXTRACTED_SIZE = 1024 * 1024 * 1024
 const PROJECT_SETUP_TIMEOUT_MS = 5 * 60 * 1000
 const LOCAL_STARTUP_TIMEOUT_MS = 60 * 1000
+const LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10 * 1000
+const LOCAL_FORCE_STOP_TIMEOUT_MS = 10 * 1000
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json')
@@ -690,9 +692,9 @@ function normalizeCloudUrl(value: string): string {
   return parsed.toString().replace(/\/$/, '')
 }
 
-async function requestWithTimeout(url: string, init?: RequestInit) {
+async function requestWithTimeout(url: string, init?: RequestInit, timeoutMs = 8000) {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 8000)
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
     return await fetch(url, { ...init, signal: controller.signal })
   } finally {
@@ -893,7 +895,11 @@ async function startLocalProject(id: string): Promise<void> {
 
   const child = spawn(venvPythonPath, ['main.py', ...project.launchArgs ?? []], {
     cwd: project.projectPath,
-    env: { ...process.env, ...project.environmentVariables },
+    env: {
+      ...process.env,
+      ...project.environmentVariables,
+      KIRA_LAUNCH_SOURCE: 'launcher',
+    },
     windowsHide: true,
     stdio: 'ignore',
   })
@@ -923,11 +929,79 @@ async function stopLocalProject(id: string): Promise<void> {
   if (!child) return
   launchedProjects.delete(id)
   if (typeof child.pid !== 'number') throw new Error('LOCAL_STOP_FAILED')
+
+  const project = (await loadProjects()).find((item) => item.id === id)
+  if (project?.type === 'local' && project.projectPath) {
+    try {
+      const localProject = await getLocalProject(project.projectPath)
+      if (await requestGracefulLocalShutdown(
+        project.projectPath,
+        localProject.port ?? 5267,
+      )) {
+        await waitForProcessExit(child, LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS)
+        return
+      }
+    } catch {
+      // The fallback below terminates the whole supervisor tree when the
+      // controlled shutdown request cannot complete.
+    }
+  }
+
+  if (child.exitCode !== null) return
   if (process.platform === 'win32') {
     await runProjectCommand('taskkill', ['/pid', String(child.pid), '/t', '/f'], process.cwd(), 'LOCAL_STOP_FAILED')
-    return
+  } else if (!child.kill('SIGTERM')) {
+    throw new Error('LOCAL_STOP_FAILED')
   }
-  if (!child.kill('SIGTERM')) throw new Error('LOCAL_STOP_FAILED')
+  await waitForProcessExit(child, LOCAL_FORCE_STOP_TIMEOUT_MS)
+}
+
+async function requestGracefulLocalShutdown(
+  projectPath: string,
+  port: number,
+): Promise<boolean> {
+  const target = `http://127.0.0.1:${port}`
+  try {
+    const sessionToken = await getWebuiSessionToken(target, await getLocalAccessToken(projectPath))
+    if (!sessionToken) return false
+    const response = await requestWithTimeout(`${target}/api/system/shutdown`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${sessionToken}`,
+      },
+    }, LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS)
+    return response.ok
+  } catch {
+    return false
+  }
+}
+
+function waitForProcessExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (child.exitCode !== null) {
+      resolve()
+      return
+    }
+    const timeout = setTimeout(() => {
+      cleanup()
+      reject(new Error('LOCAL_STOP_TIMEOUT'))
+    }, timeoutMs)
+    const onExit = () => {
+      cleanup()
+      resolve()
+    }
+    const onError = () => {
+      cleanup()
+      reject(new Error('LOCAL_STOP_FAILED'))
+    }
+    const cleanup = () => {
+      clearTimeout(timeout)
+      child.removeListener('exit', onExit)
+      child.removeListener('error', onError)
+    }
+    child.once('exit', onExit)
+    child.once('error', onError)
+  })
 }
 
 type PythonCommand = { command: string; args: string[] }
