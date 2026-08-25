@@ -81,6 +81,7 @@
       ]
     },
     "linux": {
+      "maintainer": "KiraAI Dev <contact@kira-ai.top>",
       "icon": "public/icon.png",
       "artifactName": "KiraAI-Launcher-${version}-${arch}.${ext}",
       "target": [
