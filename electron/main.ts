@@ -692,9 +692,9 @@ function normalizeCloudUrl(value: string): string {
   return parsed.toString().replace(/\/$/, '')
 }
 
-async function requestWithTimeout(url: string, init?: RequestInit) {
+async function requestWithTimeout(url: string, init?: RequestInit, timeoutMs = 8000) {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 8000)
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
     return await fetch(url, { ...init, signal: controller.signal })
   } finally {
@@ -969,7 +969,7 @@ async function requestGracefulLocalShutdown(
       headers: {
         Authorization: `Bearer ${sessionToken}`,
       },
-    })
+    }, LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS)
     return response.ok
   } catch {
     return false
