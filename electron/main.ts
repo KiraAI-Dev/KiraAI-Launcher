@@ -109,7 +109,7 @@ const defaultSettings: LauncherSettings = {
   language: 'zh-CN',
   webuiOpenMode: 'launcher',
   closeAction: 'minimize',
-  closeReminder: false,
+  closeReminder: true,
   autoUpdate: true,
 }
 
@@ -117,6 +117,7 @@ let currentSettings = defaultSettings
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let closePromptInProgress = false
 let updateCheckPromise: Promise<LauncherUpdateCheck> | null = null
 let updateRestartPromptShown = false
 
@@ -146,6 +147,69 @@ function trayText(settings: LauncherSettings) {
     : { show: 'Show Launcher', quit: 'Quit' }
 }
 
+function closeReminderText(action: CloseAction, activeProjectCount: number) {
+  const isChinese = currentSettings.language === 'zh-CN'
+  const isQuittingApp = action === 'quit'
+  if (isChinese) {
+    return {
+      title: isQuittingApp ? '退出 KiraAI Launcher' : '最小化到托盘',
+      message: isQuittingApp ? '确定要退出 KiraAI Launcher 吗？' : '确定要将 KiraAI Launcher 最小化到托盘吗？',
+      detail: isQuittingApp && activeProjectCount > 0
+        ? `由启动器启动的 ${activeProjectCount} 个 KiraAI 实例也将一并关闭。`
+        : undefined,
+      confirm: isQuittingApp ? '退出并关闭实例' : '最小化到托盘',
+      cancel: '取消',
+    }
+  }
+  return {
+    title: isQuittingApp ? 'Quit KiraAI Launcher' : 'Minimize to tray',
+    message: isQuittingApp ? 'Do you want to quit KiraAI Launcher?' : 'Do you want to minimize KiraAI Launcher to the tray?',
+    detail: isQuittingApp && activeProjectCount > 0
+      ? `${activeProjectCount} KiraAI instance${activeProjectCount === 1 ? '' : 's'} started by the launcher will also be stopped.`
+      : undefined,
+    confirm: isQuittingApp ? 'Quit and stop instances' : 'Minimize to tray',
+    cancel: 'Cancel',
+  }
+}
+
+async function confirmApplicationClose(action: CloseAction): Promise<boolean> {
+  const text = closeReminderText(action, launchedProjects.size)
+  const options = {
+    type: 'question' as const,
+    title: text.title,
+    message: text.message,
+    detail: text.detail,
+    buttons: [text.confirm, text.cancel],
+    defaultId: 0,
+    cancelId: 1,
+  }
+  const result = mainWindow && !mainWindow.isDestroyed()
+    ? await dialog.showMessageBox(mainWindow, options)
+    : await dialog.showMessageBox(options)
+  return result.response === 0
+}
+
+async function quitApplication(): Promise<void> {
+  await Promise.allSettled([...launchedProjects.keys()].map((id) => stopLocalProject(id)))
+  isQuitting = true
+  app.quit()
+}
+
+async function requestApplicationClose(action: CloseAction): Promise<void> {
+  if (isQuitting || closePromptInProgress) return
+  closePromptInProgress = true
+  try {
+    if (currentSettings.closeReminder && !await confirmApplicationClose(action)) return
+    if (action === 'minimize') {
+      mainWindow?.hide()
+      return
+    }
+    await quitApplication()
+  } finally {
+    if (!isQuitting) closePromptInProgress = false
+  }
+}
+
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     createWindow()
@@ -162,7 +226,7 @@ function updateTrayMenu(settings: LauncherSettings) {
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: text.show, click: showMainWindow },
     { type: 'separator' },
-    { label: text.quit, click: () => { isQuitting = true; app.quit() } },
+    { label: text.quit, click: () => { void requestApplicationClose('quit') } },
   ]))
 }
 
@@ -1244,13 +1308,8 @@ function createWindow() {
   mainWindow = window
   window.on('close', (event) => {
     if (isQuitting) return
-    if (currentSettings.closeAction === 'quit') {
-      isQuitting = true
-      app.quit()
-      return
-    }
     event.preventDefault()
-    window.hide()
+    void requestApplicationClose(currentSettings.closeAction)
   })
   window.on('closed', () => {
     if (mainWindow === window) mainWindow = null
@@ -1341,5 +1400,9 @@ app.whenReady().then(async () => {
   if (currentSettings.autoUpdate) void checkLauncherUpdate().catch(() => undefined)
   app.on('activate', showMainWindow)
 })
-app.on('before-quit', () => { isQuitting = true })
+app.on('before-quit', (event) => {
+  if (isQuitting) return
+  event.preventDefault()
+  void requestApplicationClose('quit')
+})
 app.on('window-all-closed', () => { if (process.platform !== 'darwin' && isQuitting) app.quit() })

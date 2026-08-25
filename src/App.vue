@@ -60,7 +60,7 @@ const DialogHost = defineComponent({
 })
 const environmentChecking = ref(false)
 const projectError = ref('')
-const closeReminder = ref(false)
+const closeReminder = ref(true)
 const autoUpdate = ref(true)
 const closeAction = ref('minimize')
 const webuiOpenMode = ref<LauncherSettings['webuiOpenMode']>('launcher')
