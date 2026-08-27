@@ -1116,17 +1116,19 @@ async function hasUv(): Promise<boolean> {
 }
 
 async function selectFastestPackageIndex(): Promise<string | undefined> {
-  const results = await Promise.all(PYTHON_PACKAGE_INDEX_URLS.map(measurePackageIndexSpeed))
-  return results
-    .filter((result): result is PackageIndexProbe => result !== undefined)
-    .sort((left, right) => right.speedBytesPerSecond - left.speedBytesPerSecond)[0]
-    ?.url
+  let fastest: PackageIndexProbe | undefined
+  for (const url of PYTHON_PACKAGE_INDEX_URLS) {
+    const result = await measurePackageIndexSpeed(url)
+    if (result && (!fastest || result.speedBytesPerSecond > fastest.speedBytesPerSecond)) fastest = result
+  }
+  return fastest?.url
 }
 
 async function measurePackageIndexSpeed(url: PackageIndexProbe['url']): Promise<PackageIndexProbe | undefined> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), PACKAGE_INDEX_PROBE_TIMEOUT_MS)
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  const startedAt = Date.now()
   try {
     const response = await fetch(url, {
       headers: { Range: `bytes=0-${PACKAGE_INDEX_PROBE_SIZE_BYTES - 1}` },
@@ -1138,14 +1140,13 @@ async function measurePackageIndexSpeed(url: PackageIndexProbe['url']): Promise<
     }
     reader = response.body?.getReader()
     if (!reader) return undefined
-    const downloadStartedAt = Date.now()
     let downloadedBytes = 0
     while (downloadedBytes < PACKAGE_INDEX_PROBE_SIZE_BYTES) {
       const { done, value } = await reader.read()
       if (done) break
       downloadedBytes += value.byteLength
     }
-    const elapsedMs = Date.now() - downloadStartedAt
+    const elapsedMs = Date.now() - startedAt
     if (downloadedBytes === 0 || elapsedMs <= 0) return undefined
     return { url, speedBytesPerSecond: downloadedBytes * 1000 / elapsedMs }
   } catch {
