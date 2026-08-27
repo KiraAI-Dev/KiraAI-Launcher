@@ -130,6 +130,18 @@ const PROJECT_SETUP_TIMEOUT_MS = 5 * 60 * 1000
 const LOCAL_STARTUP_TIMEOUT_MS = 60 * 1000
 const LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10 * 1000
 const LOCAL_FORCE_STOP_TIMEOUT_MS = 10 * 1000
+const PACKAGE_INDEX_PROBE_TIMEOUT_MS = 5000
+const PYTHON_PACKAGE_INDEX_URLS = [
+  'https://pypi.org/simple/',
+  'https://pypi.tuna.tsinghua.edu.cn/simple/',
+  'https://mirrors.aliyun.com/pypi/simple/',
+  'https://mirrors.cloud.tencent.com/pypi/simple/',
+] as const
+const DEFAULT_PYTHON_PACKAGE_INDEX_URL = PYTHON_PACKAGE_INDEX_URLS[0]
+type PackageIndexProbe = {
+  url: (typeof PYTHON_PACKAGE_INDEX_URLS)[number]
+  durationMs: number
+}
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json')
@@ -951,27 +963,33 @@ async function startLocalProject(id: string): Promise<void> {
   const localProject = await getLocalProject(project.projectPath)
   await ensureLocalPortAvailable(localProject.port ?? 5267)
   const venvPythonPath = path.join(project.projectPath, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
-  const uvAvailable = await hasUv()
-  let createdVenv = false
+  const detectedPackageIndex = await selectFastestPackageIndex()
+  const packageIndex = detectedPackageIndex ?? DEFAULT_PYTHON_PACKAGE_INDEX_URL
+  let useUv = await hasUv()
   try {
     await fs.access(venvPythonPath)
   } catch {
-    if (uvAvailable) {
-      await runProjectCommand('uv', ['venv', 'venv', '--python', '3.11', '--seed'], project.projectPath, 'VENV_CREATE_FAILED')
+    if (useUv && detectedPackageIndex) {
+      try {
+        await runProjectCommand('uv', ['venv', 'venv', '--python', '3.11', '--seed', '--index-url', packageIndex], project.projectPath, 'VENV_CREATE_FAILED')
+      } catch {
+        useUv = false
+        const hostPython = await findHostPython()
+        await runProjectCommand(hostPython.command, [...hostPython.args, '-m', 'venv', '--clear', 'venv'], project.projectPath, 'VENV_CREATE_FAILED')
+      }
     } else {
+      useUv = false
       const hostPython = await findHostPython()
       await runProjectCommand(hostPython.command, [...hostPython.args, '-m', 'venv', 'venv'], project.projectPath, 'VENV_CREATE_FAILED')
     }
-    createdVenv = true
   }
 
-  if (uvAvailable) {
-    if (createdVenv) {
-      await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '--upgrade', 'pip'], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
-    }
-    await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '-r', 'requirements.txt'], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+  if (useUv) {
+    await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '--upgrade', 'pip', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+    await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
   } else {
-    await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt'], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+    await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+    await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
   }
 
   const child = spawn(venvPythonPath, ['main.py', ...project.launchArgs ?? []], {
@@ -1094,6 +1112,23 @@ async function hasUv(): Promise<boolean> {
   } catch {
     return false
   }
+}
+
+async function selectFastestPackageIndex(): Promise<string | undefined> {
+  const results: Array<PackageIndexProbe | undefined> = await Promise.all(PYTHON_PACKAGE_INDEX_URLS.map(async (url) => {
+    const startedAt = Date.now()
+    try {
+      const response = await fetchWithTimeout(url, PACKAGE_INDEX_PROBE_TIMEOUT_MS)
+      void response.body?.cancel().catch(() => undefined)
+      return response.ok ? { url, durationMs: Date.now() - startedAt } : undefined
+    } catch {
+      return undefined
+    }
+  }))
+  return results
+    .filter((result): result is PackageIndexProbe => result !== undefined)
+    .sort((left, right) => left.durationMs - right.durationMs)[0]
+    ?.url
 }
 
 async function findHostPython(): Promise<PythonCommand> {
