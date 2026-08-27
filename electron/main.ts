@@ -131,6 +131,7 @@ const LOCAL_STARTUP_TIMEOUT_MS = 60 * 1000
 const LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10 * 1000
 const LOCAL_FORCE_STOP_TIMEOUT_MS = 10 * 1000
 const PACKAGE_INDEX_PROBE_TIMEOUT_MS = 5000
+const PACKAGE_INDEX_PROBE_SIZE_BYTES = 32 * 1024
 const PYTHON_PACKAGE_INDEX_URLS = [
   'https://pypi.org/simple/',
   'https://pypi.tuna.tsinghua.edu.cn/simple/',
@@ -140,7 +141,7 @@ const PYTHON_PACKAGE_INDEX_URLS = [
 const DEFAULT_PYTHON_PACKAGE_INDEX_URL = PYTHON_PACKAGE_INDEX_URLS[0]
 type PackageIndexProbe = {
   url: (typeof PYTHON_PACKAGE_INDEX_URLS)[number]
-  durationMs: number
+  speedBytesPerSecond: number
 }
 
 function settingsPath() {
@@ -1115,20 +1116,48 @@ async function hasUv(): Promise<boolean> {
 }
 
 async function selectFastestPackageIndex(): Promise<string | undefined> {
-  const results: Array<PackageIndexProbe | undefined> = await Promise.all(PYTHON_PACKAGE_INDEX_URLS.map(async (url) => {
-    const startedAt = Date.now()
-    try {
-      const response = await fetchWithTimeout(url, PACKAGE_INDEX_PROBE_TIMEOUT_MS)
-      void response.body?.cancel().catch(() => undefined)
-      return response.ok ? { url, durationMs: Date.now() - startedAt } : undefined
-    } catch {
-      return undefined
-    }
-  }))
+  const results = await Promise.all(PYTHON_PACKAGE_INDEX_URLS.map(measurePackageIndexSpeed))
   return results
     .filter((result): result is PackageIndexProbe => result !== undefined)
-    .sort((left, right) => left.durationMs - right.durationMs)[0]
+    .sort((left, right) => right.speedBytesPerSecond - left.speedBytesPerSecond)[0]
     ?.url
+}
+
+async function measurePackageIndexSpeed(url: PackageIndexProbe['url']): Promise<PackageIndexProbe | undefined> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), PACKAGE_INDEX_PROBE_TIMEOUT_MS)
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  try {
+    const response = await fetch(url, {
+      headers: { Range: `bytes=0-${PACKAGE_INDEX_PROBE_SIZE_BYTES - 1}` },
+      signal: controller.signal,
+    })
+    if (response.status !== 200 && response.status !== 206) {
+      await response.body?.cancel()
+      return undefined
+    }
+    reader = response.body?.getReader()
+    if (!reader) return undefined
+    const downloadStartedAt = Date.now()
+    let downloadedBytes = 0
+    while (downloadedBytes < PACKAGE_INDEX_PROBE_SIZE_BYTES) {
+      const { done, value } = await reader.read()
+      if (done) break
+      downloadedBytes += value.byteLength
+    }
+    const elapsedMs = Date.now() - downloadStartedAt
+    if (downloadedBytes === 0 || elapsedMs <= 0) return undefined
+    return { url, speedBytesPerSecond: downloadedBytes * 1000 / elapsedMs }
+  } catch {
+    return undefined
+  } finally {
+    clearTimeout(timeout)
+    try {
+      await reader?.cancel()
+    } catch {
+      // The response stream can already be closed or aborted after a complete sample.
+    }
+  }
 }
 
 async function findHostPython(): Promise<PythonCommand> {
