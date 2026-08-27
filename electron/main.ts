@@ -1131,7 +1131,10 @@ async function measurePackageIndexSpeed(url: PackageIndexProbe['url']): Promise<
   const startedAt = Date.now()
   try {
     const response = await fetch(url, {
-      headers: { Range: `bytes=0-${PACKAGE_INDEX_PROBE_SIZE_BYTES - 1}` },
+      headers: {
+        Range: `bytes=0-${PACKAGE_INDEX_PROBE_SIZE_BYTES - 1}`,
+        'Accept-Encoding': 'identity',
+      },
       signal: controller.signal,
     })
     if (response.status !== 200 && response.status !== 206) {
@@ -1141,7 +1144,8 @@ async function measurePackageIndexSpeed(url: PackageIndexProbe['url']): Promise<
     reader = response.body?.getReader()
     if (!reader) return undefined
     let downloadedBytes = 0
-    while (downloadedBytes < PACKAGE_INDEX_PROBE_SIZE_BYTES) {
+    const byteLimit = response.status === 206 ? PACKAGE_INDEX_PROBE_SIZE_BYTES : Number.POSITIVE_INFINITY
+    while (downloadedBytes < byteLimit) {
       const { done, value } = await reader.read()
       if (done) break
       downloadedBytes += value.byteLength
