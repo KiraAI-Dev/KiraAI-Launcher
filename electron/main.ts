@@ -130,6 +130,19 @@ const PROJECT_SETUP_TIMEOUT_MS = 5 * 60 * 1000
 const LOCAL_STARTUP_TIMEOUT_MS = 60 * 1000
 const LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10 * 1000
 const LOCAL_FORCE_STOP_TIMEOUT_MS = 10 * 1000
+const PACKAGE_INDEX_PROBE_TIMEOUT_MS = 5000
+const PACKAGE_INDEX_PROBE_SIZE_BYTES = 32 * 1024
+const PYTHON_PACKAGE_INDEX_URLS = [
+  'https://pypi.org/simple/',
+  'https://pypi.tuna.tsinghua.edu.cn/simple/',
+  'https://mirrors.aliyun.com/pypi/simple/',
+  'https://mirrors.cloud.tencent.com/pypi/simple/',
+] as const
+const DEFAULT_PYTHON_PACKAGE_INDEX_URL = PYTHON_PACKAGE_INDEX_URLS[0]
+type PackageIndexProbe = {
+  url: (typeof PYTHON_PACKAGE_INDEX_URLS)[number]
+  speedBytesPerSecond: number
+}
 
 function settingsPath() {
   return path.join(app.getPath('userData'), 'settings.json')
@@ -951,14 +964,34 @@ async function startLocalProject(id: string): Promise<void> {
   const localProject = await getLocalProject(project.projectPath)
   await ensureLocalPortAvailable(localProject.port ?? 5267)
   const venvPythonPath = path.join(project.projectPath, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+  const detectedPackageIndex = await selectFastestPackageIndex()
+  const packageIndex = detectedPackageIndex ?? DEFAULT_PYTHON_PACKAGE_INDEX_URL
+  let useUv = await hasUv()
   try {
     await fs.access(venvPythonPath)
   } catch {
-    const hostPython = await findHostPython()
-    await runProjectCommand(hostPython.command, [...hostPython.args, '-m', 'venv', 'venv'], project.projectPath, 'VENV_CREATE_FAILED')
+    if (useUv && detectedPackageIndex) {
+      try {
+        await runProjectCommand('uv', ['venv', 'venv', '--python', '3.11', '--seed', '--index-url', packageIndex], project.projectPath, 'VENV_CREATE_FAILED')
+      } catch {
+        useUv = false
+        const hostPython = await findHostPython()
+        await runProjectCommand(hostPython.command, [...hostPython.args, '-m', 'venv', '--clear', 'venv'], project.projectPath, 'VENV_CREATE_FAILED')
+      }
+    } else {
+      useUv = false
+      const hostPython = await findHostPython()
+      await runProjectCommand(hostPython.command, [...hostPython.args, '-m', 'venv', 'venv'], project.projectPath, 'VENV_CREATE_FAILED')
+    }
   }
 
-  await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt'], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+  if (useUv) {
+    await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '--upgrade', 'pip', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+    await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+  } else {
+    await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+    await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+  }
 
   const child = spawn(venvPythonPath, ['main.py', ...project.launchArgs ?? []], {
     cwd: project.projectPath,
@@ -1072,6 +1105,65 @@ function waitForProcessExit(child: ReturnType<typeof spawn>, timeoutMs: number):
 }
 
 type PythonCommand = { command: string; args: string[] }
+
+async function hasUv(): Promise<boolean> {
+  try {
+    await runCommand('uv', ['--version'])
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function selectFastestPackageIndex(): Promise<string | undefined> {
+  let fastest: PackageIndexProbe | undefined
+  for (const url of PYTHON_PACKAGE_INDEX_URLS) {
+    const result = await measurePackageIndexSpeed(url)
+    if (result && (!fastest || result.speedBytesPerSecond > fastest.speedBytesPerSecond)) fastest = result
+  }
+  return fastest?.url
+}
+
+async function measurePackageIndexSpeed(url: PackageIndexProbe['url']): Promise<PackageIndexProbe | undefined> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), PACKAGE_INDEX_PROBE_TIMEOUT_MS)
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
+  const startedAt = Date.now()
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Range: `bytes=0-${PACKAGE_INDEX_PROBE_SIZE_BYTES - 1}`,
+        'Accept-Encoding': 'identity',
+      },
+      signal: controller.signal,
+    })
+    if (response.status !== 200 && response.status !== 206) {
+      await response.body?.cancel()
+      return undefined
+    }
+    reader = response.body?.getReader()
+    if (!reader) return undefined
+    let downloadedBytes = 0
+    const byteLimit = response.status === 206 ? PACKAGE_INDEX_PROBE_SIZE_BYTES : Number.POSITIVE_INFINITY
+    while (downloadedBytes < byteLimit) {
+      const { done, value } = await reader.read()
+      if (done) break
+      downloadedBytes += value.byteLength
+    }
+    const elapsedMs = Date.now() - startedAt
+    if (downloadedBytes === 0 || elapsedMs <= 0) return undefined
+    return { url, speedBytesPerSecond: downloadedBytes * 1000 / elapsedMs }
+  } catch {
+    return undefined
+  } finally {
+    clearTimeout(timeout)
+    try {
+      await reader?.cancel()
+    } catch {
+      // The response stream can already be closed or aborted after a complete sample.
+    }
+  }
+}
 
 async function findHostPython(): Promise<PythonCommand> {
   const candidates: PythonCommand[] = process.platform === 'win32'
