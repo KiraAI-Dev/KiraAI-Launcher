@@ -951,14 +951,24 @@ async function startLocalProject(id: string): Promise<void> {
   const localProject = await getLocalProject(project.projectPath)
   await ensureLocalPortAvailable(localProject.port ?? 5267)
   const venvPythonPath = path.join(project.projectPath, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+  const uvAvailable = await hasUv()
   try {
     await fs.access(venvPythonPath)
   } catch {
-    const hostPython = await findHostPython()
-    await runProjectCommand(hostPython.command, [...hostPython.args, '-m', 'venv', 'venv'], project.projectPath, 'VENV_CREATE_FAILED')
+    if (uvAvailable) {
+      await runProjectCommand('uv', ['venv', 'venv', '--python', '3.11', '--seed'], project.projectPath, 'VENV_CREATE_FAILED')
+    } else {
+      const hostPython = await findHostPython()
+      await runProjectCommand(hostPython.command, [...hostPython.args, '-m', 'venv', 'venv'], project.projectPath, 'VENV_CREATE_FAILED')
+    }
   }
 
-  await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt'], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+  if (uvAvailable) {
+    await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '--upgrade', 'pip'], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+    await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '-r', 'requirements.txt'], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+  } else {
+    await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt'], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+  }
 
   const child = spawn(venvPythonPath, ['main.py', ...project.launchArgs ?? []], {
     cwd: project.projectPath,
@@ -1072,6 +1082,15 @@ function waitForProcessExit(child: ReturnType<typeof spawn>, timeoutMs: number):
 }
 
 type PythonCommand = { command: string; args: string[] }
+
+async function hasUv(): Promise<boolean> {
+  try {
+    await runCommand('uv', ['--version'])
+    return true
+  } catch {
+    return false
+  }
+}
 
 async function findHostPython(): Promise<PythonCommand> {
   const candidates: PythonCommand[] = process.platform === 'win32'
