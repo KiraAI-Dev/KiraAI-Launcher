@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, safeStorage, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
@@ -8,6 +8,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { inflateRawSync } from 'node:zlib'
 import type { AppUpdater } from 'electron-updater'
+import { decryptAccessToken, encryptAccessToken, getInstanceRuntimeDuration, getInstanceVersion, getLocalAccessToken, getWebuiSessionToken, readJson, requestWithTimeout, verifyCloudProject } from './cloud.js'
+import { checkEnvironment, installEnvironmentTool } from './environment.js'
+import { getLocalProject, saveLocalWebuiPort } from './local-project.js'
+import { downloadAndRegisterProject as downloadProject } from './project-download.js'
+import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
+import { defaultSettings, loadSettings, saveSettings } from './settings.js'
+import type { CloseAction, LauncherSettings, LauncherUpdateCheck, ManagedProject, OverviewData, StoredProject } from './types.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
@@ -16,107 +23,9 @@ const { autoUpdater } = require('electron-updater') as { autoUpdater: AppUpdater
 const isDev = !app.isPackaged
 app.setName('KiraAI Launcher')
 
-type ThemeMode = 'system' | 'light' | 'dark'
-type ThemeColor = 'blue' | 'purple' | 'green' | 'orange'
-type Language = 'zh-CN' | 'en-US'
-type CloseAction = 'minimize' | 'quit'
-type WebuiOpenMode = 'launcher' | 'browser'
-type ProjectType = 'local' | 'cloud'
-
-type ManagedProject = {
-  id: string
-  name: string
-  type: ProjectType
-  projectPath?: string
-  url?: string
-  port?: number
-  launchArgs?: string[]
-  environmentVariables?: Record<string, string>
-  version?: string
-  runtimeStartedAt?: number
-  createdAt: string
-}
-
-type StoredProject = Omit<ManagedProject, 'version' | 'runtimeStartedAt'> & {
-  encryptedAccessToken?: string
-}
-
-type AuthConfigResponse = {
-  auth_enabled?: unknown
-}
-
-type AuthLoginResponse = {
-  access_token?: unknown
-}
-
-type InstanceOverviewResponse = {
-  runtime_duration?: unknown
-}
-
-type InstanceVersionResponse = {
-  version?: unknown
-}
-
-type EnvironmentToolName = 'Python' | 'uv' | 'Node.js'
-
-type EnvironmentTool = {
-  name: EnvironmentToolName
-  installed: boolean
-  version?: string
-  path?: string
-  installVersions: string[]
-  defaultInstallVersion: string
-}
-
-type EnvironmentToolProbe = {
-  command: string
-  versionArgs: string[]
-  pathArgs?: string[]
-}
-
-type EnvironmentToolDefinition = {
-  name: EnvironmentToolName
-  probes: EnvironmentToolProbe[]
-  installVersions: string[]
-  defaultInstallVersion: string
-}
-
-type OverviewData = {
-  launcherVersion: string
-  projects: ManagedProject[]
-  activeLocalProjectIds: string[]
-}
-
-type LauncherUpdateCheck = {
-  currentVersion: string
-  latestVersion: string
-  updateAvailable: boolean
-  releaseUrl: string
-}
-
 type GitHubReleaseResponse = {
   tag_name?: unknown
   html_url?: unknown
-}
-
-type LauncherSettings = {
-  themeMode: ThemeMode
-  themeColor: ThemeColor
-  language: Language
-  webuiOpenMode: WebuiOpenMode
-  closeAction: CloseAction
-  closeReminder: boolean
-  autoUpdate: boolean
-}
-
-const defaultSettings: LauncherSettings = {
-  themeMode: 'system',
-  themeColor: 'blue',
-  language: 'zh-CN',
-  webuiOpenMode: 'launcher',
-  closeAction: 'minimize',
-  closeReminder: true,
-  autoUpdate: true,
 }
 
 let currentSettings = defaultSettings
@@ -150,10 +59,6 @@ const DEFAULT_PYTHON_PACKAGE_INDEX_URL = PYTHON_PACKAGE_INDEX_URLS[0]
 type PackageIndexProbe = {
   url: (typeof PYTHON_PACKAGE_INDEX_URLS)[number]
   speedBytesPerSecond: number
-}
-
-function settingsPath() {
-  return path.join(app.getPath('userData'), 'settings.json')
 }
 
 function applicationIconPath() {
@@ -302,110 +207,6 @@ function configureAutoUpdater() {
   })
 }
 
-function projectsPath() {
-  return path.join(app.getPath('userData'), 'projects.json')
-}
-
-function sanitizeSettings(value: unknown): LauncherSettings {
-  const candidate = typeof value === 'object' && value !== null ? value as Partial<LauncherSettings> : {}
-  return {
-    themeMode: ['system', 'light', 'dark'].includes(candidate.themeMode ?? '') ? candidate.themeMode as ThemeMode : defaultSettings.themeMode,
-    themeColor: ['blue', 'purple', 'green', 'orange'].includes(candidate.themeColor ?? '') ? candidate.themeColor as ThemeColor : defaultSettings.themeColor,
-    language: ['zh-CN', 'en-US'].includes(candidate.language ?? '') ? candidate.language as Language : defaultSettings.language,
-    webuiOpenMode: ['launcher', 'browser'].includes(candidate.webuiOpenMode ?? '') ? candidate.webuiOpenMode as WebuiOpenMode : defaultSettings.webuiOpenMode,
-    closeAction: ['minimize', 'quit'].includes(candidate.closeAction ?? '') ? candidate.closeAction as CloseAction : defaultSettings.closeAction,
-    closeReminder: typeof candidate.closeReminder === 'boolean' ? candidate.closeReminder : defaultSettings.closeReminder,
-    autoUpdate: typeof candidate.autoUpdate === 'boolean' ? candidate.autoUpdate : defaultSettings.autoUpdate,
-  }
-}
-
-async function loadSettings(): Promise<LauncherSettings> {
-  try {
-    return sanitizeSettings(JSON.parse(await fs.readFile(settingsPath(), 'utf8')))
-  } catch {
-    return saveSettings(defaultSettings)
-  }
-}
-
-async function saveSettings(settings: unknown): Promise<LauncherSettings> {
-  const safeSettings = sanitizeSettings(settings)
-  const filePath = settingsPath()
-  const temporaryPath = `${filePath}.tmp`
-  await fs.mkdir(path.dirname(filePath), { recursive: true })
-  await fs.writeFile(temporaryPath, `${JSON.stringify(safeSettings, null, 2)}\n`, 'utf8')
-  await fs.rename(temporaryPath, filePath)
-  return safeSettings
-}
-
-function sanitizeProject(value: unknown): StoredProject | null {
-  if (typeof value !== 'object' || value === null) return null
-  const candidate = value as Partial<StoredProject>
-  const type = candidate.type
-  if (typeof candidate.id !== 'string' || typeof candidate.name !== 'string' || (type !== 'local' && type !== 'cloud')) return null
-  if (type === 'local' && typeof candidate.projectPath !== 'string') return null
-  if (type === 'cloud' && typeof candidate.url !== 'string') return null
-  const launchArgs = sanitizeLaunchArgs(candidate.launchArgs)
-  const environmentVariables = sanitizeEnvironmentVariables(candidate.environmentVariables)
-  if (launchArgs === null || environmentVariables === null) return null
-  return {
-    id: candidate.id,
-    name: candidate.name,
-    type,
-    projectPath: candidate.projectPath,
-    url: candidate.url,
-    port: typeof candidate.port === 'number' ? candidate.port : undefined,
-    launchArgs,
-    environmentVariables,
-    encryptedAccessToken: typeof candidate.encryptedAccessToken === 'string'
-      ? candidate.encryptedAccessToken
-      : undefined,
-    createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString(),
-  }
-}
-
-function sanitizeLaunchArgs(value: unknown): string[] | null {
-  if (typeof value === 'undefined') return []
-  if (!Array.isArray(value) || value.length > 128) return null
-  if (value.some((argument) => typeof argument !== 'string' || argument.length > 4_096 || argument.includes('\0'))) return null
-  return [...value]
-}
-
-function sanitizeEnvironmentVariables(value: unknown): Record<string, string> | null {
-  if (typeof value === 'undefined') return {}
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-  const entries = Object.entries(value)
-  if (entries.length > 128 || entries.some(([key, variableValue]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof variableValue !== 'string' || variableValue.length > 16_384 || variableValue.includes('\0'))) return null
-  return Object.fromEntries(entries)
-}
-
-function toManagedProject(project: StoredProject): ManagedProject {
-  const { encryptedAccessToken: _encryptedAccessToken, ...managedProject } = project
-  return managedProject
-}
-
-async function loadProjects(): Promise<StoredProject[]> {
-  try {
-    const value = JSON.parse(await fs.readFile(projectsPath(), 'utf8'))
-    const projects = Array.isArray(value) ? value.map(sanitizeProject).filter((project): project is StoredProject => project !== null) : []
-    const needsRuntimeDataCleanup = Array.isArray(value) && value.some((project) => (
-      typeof project === 'object' && project !== null
-      && ('version' in project || 'runtimeStartedAt' in project || 'runtimeDuration' in project)
-    ))
-    if (needsRuntimeDataCleanup) await saveProjects(projects)
-    return Promise.all(projects.map(async (project) => {
-      if (project.type !== 'local' || !project.projectPath) return project
-      try {
-        const detected = await getLocalProject(project.projectPath)
-        return { ...project, port: detected.port }
-      } catch {
-        return project
-      }
-    }))
-  } catch {
-    return []
-  }
-}
-
 const launchedProjects = new Map<string, ReturnType<typeof spawn>>()
 
 async function loadOverview(): Promise<OverviewData> {
@@ -448,66 +249,6 @@ async function getProjectRuntimeDetails(project: StoredProject): Promise<Pick<Ma
   } catch {
     return localVersion ? { version: localVersion } : {}
   }
-}
-
-async function saveProjects(projects: StoredProject[]): Promise<StoredProject[]> {
-  const filePath = projectsPath()
-  const temporaryPath = `${filePath}.tmp`
-  await fs.mkdir(path.dirname(filePath), { recursive: true })
-  await fs.writeFile(temporaryPath, `${JSON.stringify(projects, null, 2)}\n`, 'utf8')
-  await fs.rename(temporaryPath, filePath)
-  return projects
-}
-
-async function getLocalProject(projectPath: string): Promise<Omit<ManagedProject, 'id' | 'createdAt'>> {
-  const mainPath = path.join(projectPath, 'main.py')
-  const requirementsPath = path.join(projectPath, 'requirements.txt')
-  try {
-    await Promise.all([fs.access(mainPath), fs.access(requirementsPath)])
-  } catch {
-    throw new Error('LOCAL_PROJECT_INVALID')
-  }
-
-  let port = 5267
-  try {
-    const config = JSON.parse(await fs.readFile(path.join(projectPath, 'data', 'webui.json'), 'utf8')) as { port?: unknown }
-    if (typeof config.port === 'number' && Number.isInteger(config.port) && config.port > 0 && config.port < 65536) port = config.port
-  } catch {
-    // KiraAI uses port 5267 when no webui.json exists yet.
-  }
-  let version: string | undefined
-  try {
-    const config = await fs.readFile(path.join(projectPath, 'core', 'config', 'default.py'), 'utf8')
-    version = config.match(/^VERSION\s*=\s*["']([^"']+)["']/m)?.[1]
-  } catch {
-    // The project is still manageable when its version cannot be read.
-  }
-  return { name: path.basename(projectPath), type: 'local', projectPath, port, version }
-}
-
-async function registerProject(project: Omit<StoredProject, 'id' | 'createdAt'>): Promise<StoredProject> {
-  const projects = await loadProjects()
-  const duplicate = projects.find((item) => {
-    if (item.type !== project.type) return false
-    return project.type === 'local'
-      ? item.projectPath === project.projectPath
-      : item.url === project.url
-  })
-  if (duplicate) {
-    const updatedProject: StoredProject = {
-      ...duplicate,
-      ...project,
-      id: duplicate.id,
-      createdAt: duplicate.createdAt,
-    }
-    if (JSON.stringify(updatedProject) !== JSON.stringify(duplicate)) {
-      await saveProjects(projects.map((item) => item.id === duplicate.id ? updatedProject : item))
-    }
-    return updatedProject
-  }
-  const savedProject: StoredProject = { ...project, id: randomUUID(), createdAt: new Date().toISOString() }
-  await saveProjects([...projects, savedProject])
-  return savedProject
 }
 
 function downloadError(code: string): Error {
@@ -771,135 +512,6 @@ async function downloadAndRegisterProject(parentPath: string, name: string): Pro
   }
 }
 
-function normalizeCloudUrl(value: string): string {
-  const parsed = new URL(value.trim())
-  if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) throw new Error('CLOUD_URL_INVALID')
-  parsed.pathname = parsed.pathname.replace(/\/$/, '')
-  parsed.search = ''
-  parsed.hash = ''
-  return parsed.toString().replace(/\/$/, '')
-}
-
-async function requestWithTimeout(url: string, init?: RequestInit, timeoutMs = 8000) {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    return await fetch(url, { ...init, signal: controller.signal })
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
-async function verifyCloudProject(url: string): Promise<string> {
-  const normalizedUrl = normalizeCloudUrl(url)
-  let response: Response
-  try {
-    response = await requestWithTimeout(`${normalizedUrl}/api/health`)
-  } catch {
-    throw new Error('CLOUD_UNREACHABLE')
-  }
-  if (!response.ok) throw new Error('CLOUD_NOT_KIRAAI')
-  const body = await response.json() as { status?: unknown }
-  if (body.status !== 'ok') throw new Error('CLOUD_HEALTH_INVALID')
-  return normalizedUrl
-}
-
-async function readJson(response: Response): Promise<unknown> {
-  try {
-    return await response.json()
-  } catch {
-    return null
-  }
-}
-
-async function getWebuiSessionToken(url: string, accessToken?: string): Promise<string | undefined> {
-  let configResponse: Response
-  try {
-    configResponse = await requestWithTimeout(`${url}/api/auth/config`)
-  } catch {
-    throw new Error('CLOUD_UNREACHABLE')
-  }
-  const authConfig = await readJson(configResponse) as AuthConfigResponse | null
-  const authEnabled = authConfig?.auth_enabled
-  if (authEnabled !== true && authEnabled !== false) throw new Error('CLOUD_AUTH_CONFIG_INVALID')
-  if (authEnabled && !accessToken) return undefined
-
-  let loginResponse: Response
-  try {
-    loginResponse = await requestWithTimeout(`${url}/api/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ access_token: authEnabled ? accessToken : 'disabled' }),
-    })
-  } catch {
-    throw new Error('CLOUD_UNREACHABLE')
-  }
-  if (!loginResponse.ok) {
-    if (loginResponse.status === 401 || loginResponse.status === 403) throw new Error('CLOUD_ACCESS_TOKEN_INVALID')
-    throw new Error('CLOUD_LOGIN_FAILED')
-  }
-  const login = await readJson(loginResponse) as AuthLoginResponse | null
-  if (typeof login?.access_token !== 'string' || !login.access_token) throw new Error('CLOUD_LOGIN_FAILED')
-  return login.access_token
-}
-
-function encryptAccessToken(accessToken: string): string {
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('CLOUD_TOKEN_ENCRYPTION_UNAVAILABLE')
-  return safeStorage.encryptString(accessToken).toString('base64')
-}
-
-function decryptAccessToken(project: StoredProject): string | undefined {
-  if (!project.encryptedAccessToken) return undefined
-  if (!safeStorage.isEncryptionAvailable()) throw new Error('CLOUD_TOKEN_DECRYPT_FAILED')
-  try {
-    const accessToken = safeStorage.decryptString(Buffer.from(project.encryptedAccessToken, 'base64'))
-    if (!accessToken) throw new Error('CLOUD_TOKEN_DECRYPT_FAILED')
-    return accessToken
-  } catch {
-    throw new Error('CLOUD_TOKEN_DECRYPT_FAILED')
-  }
-}
-
-async function getInstanceRuntimeDuration(url: string, sessionToken: string): Promise<number> {
-  let response: Response
-  try {
-    response = await requestWithTimeout(`${url}/api/overview`, { headers: { Authorization: `Bearer ${sessionToken}` } })
-  } catch {
-    throw new Error('CLOUD_UNREACHABLE')
-  }
-  if (!response.ok) throw new Error('CLOUD_OVERVIEW_UNAVAILABLE')
-  const overview = await readJson(response) as InstanceOverviewResponse | null
-  const runtimeDuration = overview?.runtime_duration
-  if (typeof runtimeDuration !== 'number' || !Number.isFinite(runtimeDuration) || runtimeDuration < 0) {
-    throw new Error('CLOUD_OVERVIEW_INVALID')
-  }
-  return Math.floor(runtimeDuration)
-}
-
-async function getInstanceVersion(url: string, sessionToken: string): Promise<string> {
-  let response: Response
-  try {
-    response = await requestWithTimeout(`${url}/api/version`, { headers: { Authorization: `Bearer ${sessionToken}` } })
-  } catch {
-    throw new Error('CLOUD_UNREACHABLE')
-  }
-  if (!response.ok) throw new Error('CLOUD_VERSION_UNAVAILABLE')
-  const versionResponse = await readJson(response) as InstanceVersionResponse | null
-  if (typeof versionResponse?.version !== 'string' || !versionResponse.version.trim()) throw new Error('CLOUD_VERSION_INVALID')
-  return versionResponse.version.trim()
-}
-
-async function getLocalAccessToken(projectPath: string): Promise<string | undefined> {
-  try {
-    const config = JSON.parse(await fs.readFile(path.join(projectPath, 'data', 'webui.json'), 'utf8')) as { access_token?: unknown }
-    return typeof config.access_token === 'string' && config.access_token && config.access_token !== 'disabled'
-      ? config.access_token
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
 function runCommand(command: string, args: string[], timeout = 8000): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile(command, args, { windowsHide: true, timeout }, (error, stdout, stderr) => {
@@ -907,171 +519,6 @@ function runCommand(command: string, args: string[], timeout = 8000): Promise<{ 
       else resolve({ stdout: stdout.trim(), stderr: stderr.trim() })
     })
   })
-}
-
-function firstLine(value: string): string | undefined {
-  return value.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-}
-
-async function findExecutablePath(probe: EnvironmentToolProbe): Promise<string | undefined> {
-  if (probe.pathArgs) {
-    try {
-      const result = await runCommand(probe.command, probe.pathArgs)
-      const executablePath = firstLine(result.stdout)
-      if (executablePath) return executablePath
-    } catch {
-      // Fall back to the platform command lookup below.
-    }
-  }
-  try {
-    const lookup = await runCommand(process.platform === 'win32' ? 'where' : 'which', [probe.command])
-    return firstLine(lookup.stdout)
-  } catch {
-    return undefined
-  }
-}
-
-async function detectTool(definition: EnvironmentToolDefinition): Promise<EnvironmentTool> {
-  for (const probe of definition.probes) {
-    try {
-      const versionResult = await runCommand(probe.command, probe.versionArgs)
-      const version = firstLine(versionResult.stdout) ?? firstLine(versionResult.stderr)
-      if (definition.name === 'Node.js' && !hasSupportedNodeVersion(version)) continue
-      return {
-        name: definition.name,
-        installed: true,
-        version,
-        path: await findExecutablePath(probe),
-        installVersions: definition.installVersions,
-        defaultInstallVersion: definition.defaultInstallVersion,
-      }
-    } catch {
-      // Keep trying alternate commands, such as the Windows Python Launcher.
-    }
-  }
-  const homebrewTool = await detectHomebrewTool(definition)
-  if (homebrewTool) return homebrewTool
-  return {
-    name: definition.name,
-    installed: false,
-    installVersions: definition.installVersions,
-    defaultInstallVersion: definition.defaultInstallVersion,
-  }
-}
-
-function environmentToolDefinitions(): EnvironmentToolDefinition[] {
-  const pythonProbes: EnvironmentToolProbe[] = process.platform === 'win32'
-    ? [
-        { command: 'python', versionArgs: ['--version'], pathArgs: ['-c', 'import sys; print(sys.executable)'] },
-        { command: 'py', versionArgs: ['-3', '--version'], pathArgs: ['-3', '-c', 'import sys; print(sys.executable)'] },
-      ]
-    : [
-        { command: 'python3', versionArgs: ['--version'], pathArgs: ['-c', 'import sys; print(sys.executable)'] },
-        { command: 'python', versionArgs: ['--version'], pathArgs: ['-c', 'import sys; print(sys.executable)'] },
-      ]
-  const nodeInstallVersions = process.platform === 'darwin' ? ['22 LTS', '24 LTS'] : ['LTS']
-  return [
-    { name: 'Python', probes: pythonProbes, installVersions: ['3.10', '3.11', '3.12'], defaultInstallVersion: '3.11' },
-    { name: 'uv', probes: [{ command: 'uv', versionArgs: ['--version'] }], installVersions: ['latest'], defaultInstallVersion: 'latest' },
-    { name: 'Node.js', probes: [{ command: 'node', versionArgs: ['--version'], pathArgs: ['-p', 'process.execPath'] }], installVersions: nodeInstallVersions, defaultInstallVersion: nodeInstallVersions.at(-1) ?? 'LTS' },
-  ]
-}
-
-function hasSupportedNodeVersion(version: string | undefined): boolean {
-  const majorVersion = /^v?(\d+)/.exec(version ?? '')?.[1]
-  return typeof majorVersion === 'string' && Number(majorVersion) >= MINIMUM_NODE_MAJOR_VERSION
-}
-
-function macOSPackageName(name: EnvironmentToolName, version: string): string {
-  if (name === 'Python') return `python@${version}`
-  if (name === 'uv') return 'uv'
-  return version === '22 LTS' ? 'node@22' : 'node@24'
-}
-
-function prependProcessPath(directory: string): void {
-  const currentPath = process.env.PATH ?? ''
-  const entries = currentPath.split(path.delimiter).filter(Boolean)
-  if (entries.includes(directory)) return
-  process.env.PATH = [directory, ...entries].join(path.delimiter)
-}
-
-async function detectHomebrewTool(definition: EnvironmentToolDefinition): Promise<EnvironmentTool | undefined> {
-  if (process.platform !== 'darwin' || (definition.name !== 'Python' && definition.name !== 'Node.js')) return undefined
-  for (const version of [...definition.installVersions].reverse()) {
-    try {
-      const packageName = macOSPackageName(definition.name, version)
-      const prefix = (await runCommand('brew', ['--prefix', packageName])).stdout
-      const executable = path.join(prefix, 'bin', definition.name === 'Python' ? `python${version}` : 'node')
-      const versionResult = await runCommand(executable, ['--version'])
-      const detectedVersion = firstLine(versionResult.stdout) ?? firstLine(versionResult.stderr)
-      if (definition.name === 'Node.js' && !hasSupportedNodeVersion(detectedVersion)) continue
-      prependProcessPath(definition.name === 'Python' ? path.join(prefix, 'libexec', 'bin') : path.join(prefix, 'bin'))
-      return {
-        name: definition.name,
-        installed: true,
-        version: detectedVersion,
-        path: executable,
-        installVersions: definition.installVersions,
-        defaultInstallVersion: definition.defaultInstallVersion,
-      }
-    } catch {
-      // Try another versioned Homebrew formula.
-    }
-  }
-  return undefined
-}
-
-function environmentInstallCommand(name: EnvironmentToolName, version: string): { command: string; args: string[] } {
-  if (process.platform === 'win32') {
-    const packageId = name === 'Python'
-      ? `Python.Python.${version}`
-      : name === 'uv'
-        ? 'astral-sh.uv'
-        : 'OpenJS.NodeJS.LTS'
-    return {
-      command: 'winget',
-      args: ['install', '--id', packageId, '--exact', '--accept-package-agreements', '--accept-source-agreements', '--disable-interactivity'],
-    }
-  }
-
-  if (process.platform === 'darwin') {
-    return { command: 'brew', args: ['install', macOSPackageName(name, version)] }
-  }
-
-  if (process.platform === 'linux') {
-    if (name === 'Node.js') throw new Error('ENVIRONMENT_INSTALL_UNSUPPORTED')
-    const packageName = name === 'Python'
-      ? `python${version}`
-      : name === 'uv'
-        ? 'uv'
-        : ''
-    return { command: 'pkexec', args: ['apt-get', 'install', '--yes', packageName] }
-  }
-
-  throw new Error('ENVIRONMENT_INSTALL_UNSUPPORTED')
-}
-
-async function installEnvironmentTool(value: unknown): Promise<EnvironmentTool> {
-  if (typeof value !== 'object' || value === null) throw new Error('ENVIRONMENT_INSTALL_INVALID')
-  const { name, version } = value as { name?: unknown; version?: unknown }
-  if (typeof name !== 'string' || typeof version !== 'string') throw new Error('ENVIRONMENT_INSTALL_INVALID')
-  const definition = environmentToolDefinitions().find((item) => item.name === name)
-  if (!definition || !definition.installVersions.includes(version)) throw new Error('ENVIRONMENT_INSTALL_INVALID')
-
-  const currentTool = await detectTool(definition)
-  if (currentTool.installed) return currentTool
-
-  try {
-    const command = environmentInstallCommand(definition.name, version)
-    await runCommand(command.command, command.args, ENVIRONMENT_INSTALL_TIMEOUT_MS)
-  } catch (error) {
-    if (error instanceof Error && error.message === 'ENVIRONMENT_INSTALL_UNSUPPORTED') throw error
-    throw new Error('ENVIRONMENT_INSTALL_FAILED')
-  }
-
-  const installedTool = await detectTool(definition)
-  if (!installedTool.installed) throw new Error('ENVIRONMENT_INSTALL_FAILED')
-  return installedTool
 }
 
 async function startLocalProject(id: string): Promise<void> {
@@ -1421,30 +868,6 @@ async function openProjectFolder(id: string): Promise<void> {
   if (errorMessage) throw new Error('PROJECT_FOLDER_OPEN_FAILED')
 }
 
-async function saveLocalWebuiPort(projectPath: string, port: number): Promise<void> {
-  const configPath = path.join(projectPath, 'data', 'webui.json')
-  let config: Record<string, unknown> = {}
-  try {
-    const value = JSON.parse(await fs.readFile(configPath, 'utf8')) as unknown
-    if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('PROJECT_SETTINGS_SAVE_FAILED')
-    config = value as Record<string, unknown>
-  } catch (error) {
-    if (error instanceof Error && error.message === 'PROJECT_SETTINGS_SAVE_FAILED') throw error
-    const errorCode = typeof error === 'object' && error !== null && 'code' in error
-      ? (error as NodeJS.ErrnoException).code
-      : undefined
-    if (errorCode !== 'ENOENT') throw new Error('PROJECT_SETTINGS_SAVE_FAILED')
-  }
-  try {
-    const temporaryPath = `${configPath}.tmp`
-    await fs.mkdir(path.dirname(configPath), { recursive: true })
-    await fs.writeFile(temporaryPath, `${JSON.stringify({ ...config, port }, null, 2)}\n`, 'utf8')
-    await fs.rename(temporaryPath, configPath)
-  } catch {
-    throw new Error('PROJECT_SETTINGS_SAVE_FAILED')
-  }
-}
-
 async function updateProject(value: unknown): Promise<ManagedProject> {
   if (typeof value !== 'object' || value === null) throw new Error('PROJECT_SETTINGS_INVALID')
   const { id, name, port, url, accessToken, launchArgs, environmentVariables } = value as { id?: unknown; name?: unknown; port?: unknown; url?: unknown; accessToken?: unknown; launchArgs?: unknown; environmentVariables?: unknown }
@@ -1565,7 +988,7 @@ app.whenReady().then(async () => {
     if (typeof parentPath !== 'string' || typeof name !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) {
       throw new Error('PROJECT_NAME_INVALID')
     }
-    return downloadAndRegisterProject(parentPath, name).then(toManagedProject)
+    return downloadProject(parentPath, name).then(toManagedProject)
   })
   ipcMain.handle('projects:connect-cloud', async (_event, value: unknown) => {
     if (typeof value !== 'object' || value === null) throw new Error('CLOUD_INPUT_INVALID')
@@ -1603,7 +1026,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('overview:load', loadOverview)
   ipcMain.handle('updates:check', checkLauncherUpdate)
-  ipcMain.handle('environment:check', () => Promise.all(environmentToolDefinitions().map(detectTool)))
+  ipcMain.handle('environment:check', checkEnvironment)
   ipcMain.handle('environment:install', (_event, value: unknown) => installEnvironmentTool(value))
   createTray()
   createWindow()
