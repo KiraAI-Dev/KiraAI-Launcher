@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, shell, Tray } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import { createRequire } from 'node:module'
@@ -247,7 +247,7 @@ async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestIn
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await fetch(url, { ...init, signal: controller.signal })
+    return await net.fetch(url, { ...init, signal: controller.signal })
   } finally {
     clearTimeout(timeout)
   }
@@ -497,7 +497,7 @@ async function measurePackageIndexSpeed(url: PackageIndexProbe['url']): Promise<
   let reader: ReadableStreamDefaultReader<Uint8Array> | undefined
   const startedAt = Date.now()
   try {
-    const response = await fetch(url, {
+    const response = await net.fetch(url, {
       headers: {
         Range: `bytes=0-${PACKAGE_INDEX_PROBE_SIZE_BYTES - 1}`,
         'Accept-Encoding': 'identity',

@@ -1,4 +1,4 @@
-import { safeStorage } from 'electron'
+import { net, safeStorage } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { StoredProject } from './types.js'
@@ -21,7 +21,7 @@ export async function requestWithTimeout(url: string, init?: RequestInit, timeou
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await fetch(url, { ...init, signal: controller.signal })
+    return await net.fetch(url, { ...init, signal: controller.signal })
   } finally {
     clearTimeout(timeout)
   }

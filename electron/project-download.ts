@@ -1,3 +1,4 @@
+import { net } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { inflateRawSync } from 'node:zlib'
@@ -26,7 +27,7 @@ async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestIn
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await fetch(url, { ...init, signal: controller.signal })
+    return await net.fetch(url, { ...init, signal: controller.signal })
   } finally {
     clearTimeout(timeout)
   }
