@@ -59,6 +59,9 @@ const DialogHost = defineComponent({
   },
 })
 const environmentChecking = ref(false)
+const environmentInstalling = ref<EnvironmentTool['name'] | null>(null)
+const environmentSelectedVersions = ref<Partial<Record<EnvironmentTool['name'], string>>>({})
+const environmentError = ref('')
 const projectError = ref('')
 const closeReminder = ref(true)
 const autoUpdate = ref(true)
@@ -66,6 +69,7 @@ const closeAction = ref('minimize')
 const webuiOpenMode = ref<LauncherSettings['webuiOpenMode']>('launcher')
 const settingsReady = ref(false)
 const t = computed(() => messages[language.value])
+const environmentActionsText = computed(() => t.value.environmentActions)
 const cloudConnectionText = computed(() => t.value.cloudConnectionText)
 const aboutText = computed(() => t.value.aboutText)
 const projectActionText = computed(() => t.value.projectActions)
@@ -159,6 +163,7 @@ function formatRuntimeDuration(runtimeStartedAt: number | undefined) {
 
 function getErrorMessage(error: unknown) {
   if (!(error instanceof Error)) return t.value.operationFailed
+  if (error.message in environmentActionsText.value.errors) return environmentActionsText.value.errors[error.message as keyof typeof environmentActionsText.value.errors]
   if (error.message === "BRIDGE_UNAVAILABLE") return bridgeUnavailableMessage.value
   if (error.message === 'LOCAL_PORT_UNAVAILABLE') return localPortUnavailableMessage.value
   if (error.message === 'PROJECT_LAUNCH_ARGUMENTS_INVALID') return projectAdvancedSettingsText.value.launchArgsInvalid
@@ -213,12 +218,43 @@ function upsertManagedProject(project: ManagedProject) {
 
 async function refreshEnvironment() {
   environmentChecking.value = true
+  environmentError.value = ''
   try {
     environmentTools.value = await requireLauncherBridge().environment.check()
+    for (const tool of environmentTools.value) {
+      const selectedVersion = environmentSelectedVersions.value[tool.name]
+      if (!selectedVersion || !tool.installVersions.includes(selectedVersion)) {
+        environmentSelectedVersions.value[tool.name] = tool.defaultInstallVersion
+      }
+    }
   } catch (error) {
-    projectError.value = getErrorMessage(error)
+    environmentError.value = getErrorMessage(error)
   } finally {
     environmentChecking.value = false
+  }
+}
+
+function environmentVersionOptions(tool: EnvironmentTool) {
+  return tool.installVersions.map((version) => ({ label: version, value: version }))
+}
+
+function isEnvironmentInstalling(tool: EnvironmentTool) {
+  return environmentInstalling.value === tool.name
+}
+
+async function installEnvironmentTool(tool: EnvironmentTool) {
+  if (tool.installed || isEnvironmentInstalling(tool)) return
+  const version = environmentSelectedVersions.value[tool.name] ?? tool.defaultInstallVersion
+  environmentInstalling.value = tool.name
+  environmentError.value = ''
+  try {
+    const installedTool = await requireLauncherBridge().environment.install({ name: tool.name, version })
+    environmentTools.value = environmentTools.value.map((item) => item.name === tool.name ? installedTool : item)
+    messageHost.value?.success(environmentActionsText.value.installSuccess.replace('{tool}', tool.name))
+  } catch (error) {
+    environmentError.value = getErrorMessage(error)
+  } finally {
+    environmentInstalling.value = null
   }
 }
 
@@ -532,7 +568,7 @@ onBeforeUnmount(() => {
             </n-grid>
           </n-space></template>
           <template v-else-if="activeView === 'projects'"><n-space vertical :size="24"><div class="page-heading"><div><h1>{{ t.projects }}</h1><p>{{ t.manageProjects }}</p></div><n-space><n-button :loading="projectsRefreshing" @click="refreshProjectRuntime"><template #icon><n-icon :component="RefreshOutline" /></template>{{ t.refresh }}</n-button><n-button type="primary" @click="openNewProjectModal"><template #icon><n-icon :component="AddOutline" /></template>{{ t.newProject }}</n-button></n-space></div><n-alert v-if="projectError" type="error" :title="t.operationFailed" closable @close="projectError = ''">{{ projectError }}</n-alert><n-card><n-empty v-if="!managedProjects.length" :description="t.noManagedProjects"><template #extra><n-text depth="3">{{ t.noManagedProjectsSub }}</n-text></template><n-button type="primary" @click="openNewProjectModal">{{ t.newProject }}</n-button></n-empty><n-data-table v-else :columns="managedProjectColumns" :data="managedProjects" :bordered="false" :single-line="false" :scroll-x="1000" /></n-card></n-space></template>
-          <template v-else-if="activeView === 'environment'"><n-space vertical :size="24" class="environment-page"><div class="page-heading"><div><h1>{{ t.environment }}</h1><p>{{ t.environmentSub }}</p></div><n-button :loading="environmentChecking" @click="refreshEnvironment">{{ environmentChecking ? t.checking : t.refresh }}</n-button></div><n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen" item-responsive><n-grid-item v-for="tool in environmentTools" :key="tool.name" span="3 m:1"><n-card size="small" class="environment-card"><n-space vertical :size="16"><n-space justify="space-between" align="center"><n-space align="center"><n-icon :component="tool.name === 'Python' ? CodeSlashOutline : tool.name === 'uv' ? CubeOutline : HardwareChipOutline" :color="activePalette.primary" size="24" /><strong>{{ tool.name }}</strong></n-space><n-tag :type="tool.installed ? 'success' : 'error'" size="small" :bordered="false">{{ tool.installed ? t.installed : t.notInstalled }}</n-tag></n-space><n-text depth="3">{{ tool.version || '—' }}</n-text><div class="environment-path"><span>{{ t.environmentPath }}</span><code>{{ tool.path || '—' }}</code></div></n-space></n-card></n-grid-item></n-grid></n-space></template>
+          <template v-else-if="activeView === 'environment'"><n-space vertical :size="24" class="environment-page"><div class="page-heading"><div><h1>{{ t.environment }}</h1><p>{{ t.environmentSub }}</p></div><n-button :loading="environmentChecking" :disabled="environmentInstalling !== null" @click="refreshEnvironment">{{ environmentChecking ? t.checking : t.refresh }}</n-button></div><n-alert v-if="environmentError" type="error" :title="t.operationFailed" closable @close="environmentError = ''">{{ environmentError }}</n-alert><n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen" item-responsive><n-grid-item v-for="tool in environmentTools" :key="tool.name" span="3 m:1"><n-card size="small" class="environment-card"><n-space vertical :size="16"><n-space justify="space-between" align="center"><n-space align="center"><n-icon :component="tool.name === 'Python' ? CodeSlashOutline : tool.name === 'uv' ? CubeOutline : HardwareChipOutline" :color="activePalette.primary" size="24" /><strong>{{ tool.name }}</strong></n-space><n-tag :type="tool.installed ? 'success' : 'error'" size="small" :bordered="false">{{ tool.installed ? t.installed : t.notInstalled }}</n-tag></n-space><n-text depth="3">{{ tool.version || '—' }}</n-text><div class="environment-path"><span>{{ t.environmentPath }}</span><code>{{ tool.path || '—' }}</code></div><div class="environment-actions"><n-select v-model:value="environmentSelectedVersions[tool.name]" :options="environmentVersionOptions(tool)" :disabled="tool.installed || environmentInstalling !== null" size="small" /><n-button type="primary" size="small" :loading="isEnvironmentInstalling(tool)" :disabled="tool.installed || environmentInstalling !== null" @click="installEnvironmentTool(tool)">{{ tool.installed ? t.installed : environmentActionsText.install }}</n-button></div></n-space></n-card></n-grid-item></n-grid></n-space></template>
           <template v-else-if="activeView === 'settings'"><n-space vertical :size="30" class="settings-page"><div class="page-heading"><div><h1>{{ t.settings }}</h1><p>{{ t.settingsSub }}</p></div></div>
             <section><h2 class="settings-section-title">{{ t.appearance }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="isDark ? MoonOutline : SunnyOutline" size="22" /><div><h3>{{ t.theme }}</h3><p>{{ t.themeSub }}</p></div></div><n-select v-model:value="themeMode" :options="themeOptions" style="width: 190px" /></div><n-text depth="3" class="setting-hint">{{ t.themeHint }}</n-text></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><span class="palette-dot" :style="{ backgroundColor: activePalette.primary }"></span><div><h3>{{ t.themeColor }}</h3><p>{{ t.themeColorSub }}</p></div></div><n-select v-model:value="themeColor" :options="colorOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="LanguageOutline" size="22" /><div><h3>{{ t.language }}</h3><p>{{ t.languageSub }}</p></div></div><n-select v-model:value="language" :options="languageOptions" style="width: 190px" /></div><n-text depth="3" class="setting-hint">{{ t.languageHint }}</n-text></n-card></n-space></section>
             <section><h2 class="settings-section-title">{{ t.behavior }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.webuiOpenMode }}</h3><p>{{ t.webuiOpenModeSub }}</p></div></div><n-select v-model:value="webuiOpenMode" :options="webuiOpenModeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeWhen }}</h3><p>{{ t.closeWhenSub }}</p></div></div><n-select v-model:value="closeAction" :options="closeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeReminder }}</h3><p>{{ t.closeReminderSub }}</p></div></div><n-switch v-model:value="closeReminder" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoUpdate }}</h3><p>{{ t.autoUpdateSub }}</p></div></div><n-switch v-model:value="autoUpdate" /></div></n-card></n-space></section>

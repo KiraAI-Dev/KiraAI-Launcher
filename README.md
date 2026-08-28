@@ -23,7 +23,7 @@ KiraAI Launcher is a cross-platform desktop application for managing local and c
 - Connect to a deployed KiraAI WebUI instance.
 - Change local WebUI ports and set advanced launch arguments or environment variables.
 - Open a project's WebUI inside the launcher or in your system browser.
-- Inspect installed Python, uv, and Node.js environments.
+- Inspect Python, uv, and Node.js environments, and install missing tools from supported versions.
 - Choose light, dark, or system theme; select a display language and accent color.
 - Minimize to the system tray and receive application updates.
 
@@ -37,7 +37,7 @@ Use **New Project** to choose one of the following:
 2. **Download and deploy** — select a parent folder and project name; the launcher downloads the latest KiraAI release and registers it.
 3. **Connect a cloud instance** — enter the URL of a running KiraAI WebUI. An optional WebUI Access Token is encrypted with the operating system's secure storage before it is saved locally.
 
-For local projects, install a supported Python version and make it available on `PATH`. The **Environment** page reports whether Python, uv, and Node.js are available.
+For local projects, install a supported Python version and make it available on `PATH`. The **Environment** page reports whether Python, uv, and Node.js are available, and can install a missing tool using the system package manager. Select a version before installation; restart the launcher after it completes so the new command path is available.
 
 ## ⚙️ Using a Project
 

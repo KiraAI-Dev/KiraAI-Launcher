@@ -34,6 +34,8 @@ interface EnvironmentTool {
   installed: boolean
   version?: string
   path?: string
+  installVersions: string[]
+  defaultInstallVersion: string
 }
 
 interface OverviewData {
@@ -77,6 +79,7 @@ interface Window {
     }
     environment: {
       check: () => Promise<EnvironmentTool[]>
+      install: (value: { name: EnvironmentTool['name']; version: string }) => Promise<EnvironmentTool>
     }
   }
 }
