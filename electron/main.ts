@@ -137,6 +137,7 @@ const LOCAL_STARTUP_TIMEOUT_MS = 60 * 1000
 const LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10 * 1000
 const LOCAL_FORCE_STOP_TIMEOUT_MS = 10 * 1000
 const ENVIRONMENT_INSTALL_TIMEOUT_MS = 10 * 60 * 1000
+const MINIMUM_NODE_MAJOR_VERSION = 20
 const PACKAGE_INDEX_PROBE_TIMEOUT_MS = 5000
 const PACKAGE_INDEX_PROBE_SIZE_BYTES = 32 * 1024
 const PYTHON_PACKAGE_INDEX_URLS = [
@@ -934,10 +935,12 @@ async function detectTool(definition: EnvironmentToolDefinition): Promise<Enviro
   for (const probe of definition.probes) {
     try {
       const versionResult = await runCommand(probe.command, probe.versionArgs)
+      const version = firstLine(versionResult.stdout) ?? firstLine(versionResult.stderr)
+      if (definition.name === 'Node.js' && !hasSupportedNodeVersion(version)) continue
       return {
         name: definition.name,
         installed: true,
-        version: firstLine(versionResult.stdout) ?? firstLine(versionResult.stderr),
+        version,
         path: await findExecutablePath(probe),
         installVersions: definition.installVersions,
         defaultInstallVersion: definition.defaultInstallVersion,
@@ -946,6 +949,8 @@ async function detectTool(definition: EnvironmentToolDefinition): Promise<Enviro
       // Keep trying alternate commands, such as the Windows Python Launcher.
     }
   }
+  const homebrewTool = await detectHomebrewTool(definition)
+  if (homebrewTool) return homebrewTool
   return {
     name: definition.name,
     installed: false,
@@ -972,6 +977,50 @@ function environmentToolDefinitions(): EnvironmentToolDefinition[] {
   ]
 }
 
+function hasSupportedNodeVersion(version: string | undefined): boolean {
+  const majorVersion = /^v?(\d+)/.exec(version ?? '')?.[1]
+  return typeof majorVersion === 'string' && Number(majorVersion) >= MINIMUM_NODE_MAJOR_VERSION
+}
+
+function macOSPackageName(name: EnvironmentToolName, version: string): string {
+  if (name === 'Python') return `python@${version}`
+  if (name === 'uv') return 'uv'
+  return version === '22 LTS' ? 'node@22' : 'node@24'
+}
+
+function prependProcessPath(directory: string): void {
+  const currentPath = process.env.PATH ?? ''
+  const entries = currentPath.split(path.delimiter).filter(Boolean)
+  if (entries.includes(directory)) return
+  process.env.PATH = [directory, ...entries].join(path.delimiter)
+}
+
+async function detectHomebrewTool(definition: EnvironmentToolDefinition): Promise<EnvironmentTool | undefined> {
+  if (process.platform !== 'darwin' || (definition.name !== 'Python' && definition.name !== 'Node.js')) return undefined
+  for (const version of [...definition.installVersions].reverse()) {
+    try {
+      const packageName = macOSPackageName(definition.name, version)
+      const prefix = (await runCommand('brew', ['--prefix', packageName])).stdout
+      const executable = path.join(prefix, 'bin', definition.name === 'Python' ? `python${version}` : 'node')
+      const versionResult = await runCommand(executable, ['--version'])
+      const detectedVersion = firstLine(versionResult.stdout) ?? firstLine(versionResult.stderr)
+      if (definition.name === 'Node.js' && !hasSupportedNodeVersion(detectedVersion)) continue
+      prependProcessPath(definition.name === 'Python' ? path.join(prefix, 'libexec', 'bin') : path.join(prefix, 'bin'))
+      return {
+        name: definition.name,
+        installed: true,
+        version: detectedVersion,
+        path: executable,
+        installVersions: definition.installVersions,
+        defaultInstallVersion: definition.defaultInstallVersion,
+      }
+    } catch {
+      // Try another versioned Homebrew formula.
+    }
+  }
+  return undefined
+}
+
 function environmentInstallCommand(name: EnvironmentToolName, version: string): { command: string; args: string[] } {
   if (process.platform === 'win32') {
     const packageId = name === 'Python'
@@ -986,20 +1035,16 @@ function environmentInstallCommand(name: EnvironmentToolName, version: string): 
   }
 
   if (process.platform === 'darwin') {
-    const packageName = name === 'Python'
-      ? `python@${version}`
-      : name === 'uv'
-        ? 'uv'
-        : version === '22 LTS' ? 'node@22' : 'node@24'
-    return { command: 'brew', args: ['install', packageName] }
+    return { command: 'brew', args: ['install', macOSPackageName(name, version)] }
   }
 
   if (process.platform === 'linux') {
+    if (name === 'Node.js') throw new Error('ENVIRONMENT_INSTALL_UNSUPPORTED')
     const packageName = name === 'Python'
       ? `python${version}`
       : name === 'uv'
         ? 'uv'
-        : 'nodejs'
+        : ''
     return { command: 'pkexec', args: ['apt-get', 'install', '--yes', packageName] }
   }
 
@@ -1025,12 +1070,8 @@ async function installEnvironmentTool(value: unknown): Promise<EnvironmentTool> 
   }
 
   const installedTool = await detectTool(definition)
-  // Package managers commonly update PATH only for newly started processes. A
-  // successful install is still reflected immediately; a restart will refresh
-  // the executable path when the new PATH is available to the launcher.
-  return installedTool.installed
-    ? installedTool
-    : { ...installedTool, installed: true, version }
+  if (!installedTool.installed) throw new Error('ENVIRONMENT_INSTALL_FAILED')
+  return installedTool
 }
 
 async function startLocalProject(id: string): Promise<void> {
