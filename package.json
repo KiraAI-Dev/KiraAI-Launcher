@@ -16,7 +16,9 @@
     "dist:win": "npm run build && npm run package:win:x64 && npm run package:win:arm64",
     "package:win:x64": "electron-builder --win --x64 --publish never",
     "package:win:arm64": "electron-builder --win --arm64 --publish never --config.publish.channel=latest-arm64",
-    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:mac": "npm run build && npm run package:mac:updates && npm run package:mac:portable",
+    "package:mac:updates": "electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "package:mac:portable": "electron-builder --config electron-builder.portable-mac.cjs --mac zip --x64 --arm64 --publish never",
     "dist:linux": "npm run build && electron-builder --linux --publish never",
     "publish": "npm run build && electron-builder --publish always"
   },
@@ -60,12 +62,16 @@
       "icon": "build/icon.ico",
       "artifactName": "KiraAI-Launcher-Setup-${version}-${arch}.${ext}",
       "target": [
-        "nsis"
+        "nsis",
+        "portable"
       ]
     },
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true
+    },
+    "portable": {
+      "artifactName": "KiraAI-Launcher-Portable-${version}-${arch}.${ext}"
     },
     "mac": {
       "artifactName": "KiraAI-Launcher-${version}-${arch}.${ext}",
@@ -79,6 +85,9 @@
           "arch": ["x64", "arm64"]
         }
       ]
+    },
+    "dmg": {
+      "artifactName": "KiraAI-Launcher-${version}-${arch}.${ext}"
     },
     "linux": {
       "maintainer": "KiraAI Dev <contact@kira-ai.top>",
@@ -95,6 +104,9 @@
         }
       ],
       "category": "Development"
+    },
+    "appImage": {
+      "artifactName": "KiraAI-Launcher-Portable-${version}-${arch}.${ext}"
     }
   }
 }
