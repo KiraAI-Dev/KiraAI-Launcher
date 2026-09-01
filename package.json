@@ -16,9 +16,9 @@
     "dist:win": "npm run build && npm run package:win:x64 && npm run package:win:arm64",
     "package:win:x64": "electron-builder --win --x64 --publish never",
     "package:win:arm64": "electron-builder --win --arm64 --publish never --config.publish.channel=latest-arm64",
-    "dist:mac": "npm run build && npm run package:mac:dmg && npm run package:mac:zip",
-    "package:mac:dmg": "electron-builder --mac dmg --publish never",
-    "package:mac:zip": "electron-builder --mac zip --publish never --config.extraMetadata.kiraPortable=true",
+    "dist:mac": "npm run build && npm run package:mac:updates && npm run package:mac:portable",
+    "package:mac:updates": "electron-builder --mac dmg zip --x64 --arm64 --publish never",
+    "package:mac:portable": "electron-builder --config electron-builder.portable-mac.cjs --mac zip --x64 --arm64 --publish never",
     "dist:linux": "npm run build && electron-builder --linux --publish never",
     "publish": "npm run build && electron-builder --publish always"
   },
@@ -74,7 +74,7 @@
       "artifactName": "KiraAI-Launcher-Portable-${version}-${arch}.${ext}"
     },
     "mac": {
-      "artifactName": "KiraAI-Launcher-Portable-${version}-${arch}.${ext}",
+      "artifactName": "KiraAI-Launcher-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
