@@ -37,6 +37,7 @@ const projectSettingsName = ref('')
 const projectSettingsPort = ref<number | null>(null)
 const projectSettingsUrl = ref('')
 const projectSettingsAccessToken = ref('')
+const projectSettingsLoadedAccessToken = ref<string | null>(null)
 const projectSettingsLaunchArgs = ref('')
 const projectSettingsEnvironmentVariables = ref('')
 const projectSettingsSaving = ref(false)
@@ -71,6 +72,7 @@ const settingsReady = ref(false)
 const t = computed(() => messages[language.value])
 const environmentActionsText = computed(() => t.value.environmentActions)
 const cloudConnectionText = computed(() => t.value.cloudConnectionText)
+const hasSavedCloudAccessToken = computed(() => editingProject.value?.type === 'cloud' && editingProject.value.hasSavedAccessToken === true)
 const aboutText = computed(() => t.value.aboutText)
 const projectActionText = computed(() => t.value.projectActions)
 const localizedErrors = computed(() => t.value.errors)
@@ -387,9 +389,22 @@ function openProjectSettings(project: ManagedProject) {
   projectSettingsPort.value = project.type === 'local' ? project.port ?? 5267 : null
   projectSettingsUrl.value = project.type === 'cloud' ? project.url ?? '' : ''
   projectSettingsAccessToken.value = ''
+  projectSettingsLoadedAccessToken.value = null
   projectSettingsLaunchArgs.value = (project.launchArgs ?? []).map(formatLaunchArgument).join(' ')
   projectSettingsEnvironmentVariables.value = Object.entries(project.environmentVariables ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
   showProjectSettingsModal.value = true
+  if (project.type === 'cloud' && project.hasSavedAccessToken) void loadProjectSettingsAccessToken(project)
+}
+
+async function loadProjectSettingsAccessToken(project: ManagedProject) {
+  try {
+    const accessToken = await requireLauncherBridge().projects.getAccessToken(project.id)
+    if (!showProjectSettingsModal.value || editingProject.value?.id !== project.id) return
+    projectSettingsAccessToken.value = accessToken
+    projectSettingsLoadedAccessToken.value = accessToken
+  } catch (error) {
+    projectError.value = getErrorMessage(error)
+  }
 }
 
 function formatLaunchArgument(argument: string) {
@@ -463,7 +478,7 @@ async function saveProjectSettings() {
   try {
     const updatedProject = project.type === 'local'
       ? await requireLauncherBridge().projects.update({ id: project.id, name: projectSettingsName.value, port: projectSettingsPort.value, launchArgs: parseProjectSettingsLaunchArgs(), environmentVariables: parseProjectSettingsEnvironmentVariables() })
-      : await requireLauncherBridge().projects.update({ id: project.id, name: projectSettingsName.value, url: projectSettingsUrl.value, accessToken: projectSettingsAccessToken.value || undefined })
+      : await requireLauncherBridge().projects.update({ id: project.id, name: projectSettingsName.value, url: projectSettingsUrl.value, accessToken: projectSettingsAccessToken.value === projectSettingsLoadedAccessToken.value ? undefined : projectSettingsAccessToken.value || undefined })
     upsertManagedProject(updatedProject)
     showProjectSettingsModal.value = false
   } catch (error) {
@@ -585,7 +600,7 @@ onBeforeUnmount(() => {
       <n-space v-else vertical :size="18"><n-form label-placement="top"><n-form-item :label="t.cloudName"><n-input v-model:value="cloudProjectName" :placeholder="t.cloudName" /></n-form-item><n-form-item :label="t.cloudUrl"><n-input v-model:value="cloudProjectUrl" placeholder="https://kira.example.com" /></n-form-item><n-form-item :label="cloudConnectionText.accessToken"><n-input v-model:value="cloudAccessToken" type="password" show-password-on="click" autocomplete="off" /><template #feedback>{{ cloudConnectionText.accessTokenHint }}</template></n-form-item></n-form><p class="modal-hint">{{ t.cloudHint }}</p><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="actionInProgress" @click="projectCreationMode = null">{{ t.back }}</n-button><n-button type="primary" :disabled="!cloudProjectName.trim() || !cloudProjectUrl.trim()" :loading="actionInProgress" @click="connectCloudProject">{{ t.connectInstance }}</n-button></n-space></n-space>
       </n-modal>
       <n-modal v-model:show="showProjectSettingsModal" preset="card" :title="t.projectSettings" class="project-modal" :mask-closable="!projectSettingsSaving">
-        <n-space v-if="editingProject" vertical :size="18"><p class="modal-hint">{{ t.projectSettingsSub }}</p><n-form label-placement="top"><n-form-item :label="t.projectName"><n-input v-model:value="projectSettingsName" :placeholder="t.projectName" /></n-form-item><template v-if="editingProject.type === 'local'"><n-form-item :label="t.webuiPort"><n-input-number v-model:value="projectSettingsPort" :min="1" :max="65535" :show-button="false" style="width: 100%" /><template #feedback>{{ t.webuiPortSub }}</template></n-form-item><n-collapse class="project-advanced-settings"><n-collapse-item :title="projectAdvancedSettingsText.title" name="advanced"><p class="modal-hint">{{ projectAdvancedSettingsText.subtitle }}</p><n-form-item :label="projectAdvancedSettingsText.launchArgs"><n-input v-model:value="projectSettingsLaunchArgs" placeholder="--env dev" /><template #feedback>{{ projectAdvancedSettingsText.launchArgsHint }}</template></n-form-item><n-form-item :label="projectAdvancedSettingsText.environmentVariables"><n-input v-model:value="projectSettingsEnvironmentVariables" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" /><template #feedback>{{ projectAdvancedSettingsText.environmentVariablesHint }}</template></n-form-item></n-collapse-item></n-collapse></template><template v-else><n-form-item :label="t.cloudUrl"><n-input v-model:value="projectSettingsUrl" placeholder="https://kira.example.com" /><template #feedback>{{ t.cloudUrlSub }}</template></n-form-item><n-form-item class="project-settings-token" :label="cloudConnectionText.accessToken"><n-input v-model:value="projectSettingsAccessToken" type="password" show-password-on="click" autocomplete="off" /><template #feedback>{{ cloudConnectionText.accessTokenUpdateHint }}</template></n-form-item></template></n-form><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="projectSettingsSaving" @click="showProjectSettingsModal = false">{{ t.cancel }}</n-button><n-button type="primary" :disabled="!projectSettingsName.trim() || (editingProject.type === 'local' ? projectSettingsPort === null : !projectSettingsUrl.trim())" :loading="projectSettingsSaving" @click="saveProjectSettings">{{ t.save }}</n-button></n-space></n-space>
+        <n-space v-if="editingProject" vertical :size="18"><p class="modal-hint">{{ t.projectSettingsSub }}</p><n-form label-placement="top"><n-form-item :label="t.projectName"><n-input v-model:value="projectSettingsName" :placeholder="t.projectName" /></n-form-item><template v-if="editingProject.type === 'local'"><n-form-item :label="t.webuiPort"><n-input-number v-model:value="projectSettingsPort" :min="1" :max="65535" :show-button="false" style="width: 100%" /><template #feedback>{{ t.webuiPortSub }}</template></n-form-item><n-collapse class="project-advanced-settings"><n-collapse-item :title="projectAdvancedSettingsText.title" name="advanced"><p class="modal-hint">{{ projectAdvancedSettingsText.subtitle }}</p><n-form-item :label="projectAdvancedSettingsText.launchArgs"><n-input v-model:value="projectSettingsLaunchArgs" placeholder="--env dev" /><template #feedback>{{ projectAdvancedSettingsText.launchArgsHint }}</template></n-form-item><n-form-item :label="projectAdvancedSettingsText.environmentVariables"><n-input v-model:value="projectSettingsEnvironmentVariables" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" /><template #feedback>{{ projectAdvancedSettingsText.environmentVariablesHint }}</template></n-form-item></n-collapse-item></n-collapse></template><template v-else><n-form-item :label="t.cloudUrl"><n-input v-model:value="projectSettingsUrl" placeholder="https://kira.example.com" /><template #feedback>{{ t.cloudUrlSub }}</template></n-form-item><n-form-item class="project-settings-token" :label="cloudConnectionText.accessToken"><n-input v-model:value="projectSettingsAccessToken" type="password" show-password-on="click" autocomplete="off" /><template #feedback>{{ hasSavedCloudAccessToken ? cloudConnectionText.accessTokenSavedHint : cloudConnectionText.accessTokenUpdateHint }}</template></n-form-item></template></n-form><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="projectSettingsSaving" @click="showProjectSettingsModal = false">{{ t.cancel }}</n-button><n-button type="primary" :disabled="!projectSettingsName.trim() || (editingProject.type === 'local' ? projectSettingsPort === null : !projectSettingsUrl.trim())" :loading="projectSettingsSaving" @click="saveProjectSettings">{{ t.save }}</n-button></n-space></n-space>
       </n-modal>
     </n-message-provider>
     </n-dialog-provider>

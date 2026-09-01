@@ -39,7 +39,7 @@ export function sanitizeEnvironmentVariables(value: unknown): Record<string, str
 
 export function toManagedProject(project: StoredProject): ManagedProject {
   const { encryptedAccessToken: _encryptedAccessToken, ...managedProject } = project
-  return managedProject
+  return { ...managedProject, hasSavedAccessToken: Boolean(project.encryptedAccessToken) }
 }
 
 export async function loadProjects(): Promise<StoredProject[]> {

@@ -14,12 +14,13 @@ export type ManagedProject = {
   port?: number
   launchArgs?: string[]
   environmentVariables?: Record<string, string>
+  hasSavedAccessToken?: boolean
   version?: string
   runtimeStartedAt?: number
   createdAt: string
 }
 
-export type StoredProject = Omit<ManagedProject, 'version' | 'runtimeStartedAt'> & {
+export type StoredProject = Omit<ManagedProject, 'hasSavedAccessToken' | 'version' | 'runtimeStartedAt'> & {
   encryptedAccessToken?: string
 }
 

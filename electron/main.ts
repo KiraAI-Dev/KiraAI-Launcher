@@ -821,6 +821,15 @@ app.whenReady().then(async () => {
     return toManagedProject(await registerProject({ name: name.trim(), type: 'cloud', url: normalizedUrl, ...tokenDetails }))
   })
   ipcMain.handle('projects:update', (_event, value: unknown) => updateProject(value))
+  ipcMain.handle('projects:get-access-token', async (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('PROJECT_ID_INVALID')
+    const project = (await loadProjects()).find((item) => item.id === id)
+    if (!project) throw new Error('PROJECT_NOT_FOUND')
+    if (project.type !== 'cloud') throw new Error('PROJECT_SETTINGS_INVALID')
+    const accessToken = decryptAccessToken(project)
+    if (!accessToken) throw new Error('CLOUD_TOKEN_DECRYPT_FAILED')
+    return accessToken
+  })
   ipcMain.handle('projects:start', (_event, id: unknown) => {
     if (typeof id !== 'string') throw new Error('PROJECT_ID_INVALID')
     return startLocalProject(id)

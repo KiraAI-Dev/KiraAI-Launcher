@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
     download: (value: { parentPath: string; name: string }) => ipcRenderer.invoke('projects:download', value),
     connectCloud: (value: { name: string; url: string; accessToken?: string }) => ipcRenderer.invoke('projects:connect-cloud', value),
     update: (value: { id: string; name: string; port?: number | null; url?: string; accessToken?: string; launchArgs?: string[]; environmentVariables?: Record<string, string> }) => ipcRenderer.invoke('projects:update', value),
+    getAccessToken: (id: string) => ipcRenderer.invoke('projects:get-access-token', id),
     start: (id: string) => ipcRenderer.invoke('projects:start', id),
     stop: (id: string) => ipcRenderer.invoke('projects:stop', id),
     open: (id: string) => ipcRenderer.invoke('projects:open', id),
