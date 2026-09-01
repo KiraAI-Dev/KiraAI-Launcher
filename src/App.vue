@@ -570,7 +570,7 @@ onBeforeUnmount(() => {
         <div class="sider-bottom"><n-menu v-model:value="activeView" :options="settingsMenu" /></div>
       </n-layout-sider>
       <n-layout native-scrollbar class="right-layout">
-        <n-layout-content native-scrollbar class="right-content" content-style="padding: 32px 38px;">
+        <n-layout-content :native-scrollbar="false" class="right-content" content-style="padding: 32px 38px;">
           <template v-if="activeView === 'overview'"><n-space vertical :size="28">
             <div class="page-heading"><div><h1>{{ t.welcome }}</h1><p>{{ t.overviewSub }}</p></div><n-space><n-button @click="activeView = 'projects'"><template #icon><n-icon :component="FolderOpenOutline" /></template>{{ t.openProject }}</n-button><n-button type="primary" @click="openNewProjectModal"><template #icon><n-icon :component="AddOutline" /></template>{{ t.newProject }}</n-button></n-space></div>
             <n-grid :cols="4" :x-gap="16" :y-gap="16" responsive="screen" item-responsive>

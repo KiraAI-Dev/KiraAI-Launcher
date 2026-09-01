@@ -8,6 +8,7 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .right-layout > .n-layout-scroll-container { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
 .right-content { flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .right-content > .n-layout-scroll-container { height: 100%; overflow-x: hidden; overflow-y: auto; }
+.right-content > .n-scrollbar, .right-content > .n-scrollbar > .n-scrollbar-container { height: 100%; }
 .brand { height: 68px; padding: 0 20px; display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; transition: height .2s ease, padding .2s ease, gap .2s ease; }
 .brand span { max-width: 180px; opacity: 1; transform: translateX(0); transition: max-width .2s ease, opacity .16s ease, transform .2s ease; }
 .n-layout-sider--collapsed .brand { height: 64px; padding: 0; justify-content: center; gap: 0; }
