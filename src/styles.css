@@ -8,6 +8,7 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .right-layout > .n-layout-scroll-container { height: 100%; display: flex; flex-direction: column; overflow: hidden; }
 .right-content { flex: 1 1 auto; min-height: 0; overflow: hidden; }
 .right-content > .n-layout-scroll-container { height: 100%; overflow-x: hidden; overflow-y: auto; }
+.right-content > .n-scrollbar, .right-content > .n-scrollbar > .n-scrollbar-container { height: 100%; }
 .brand { height: 68px; padding: 0 20px; display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 600; white-space: nowrap; overflow: hidden; transition: height .2s ease, padding .2s ease, gap .2s ease; }
 .brand span { max-width: 180px; opacity: 1; transform: translateX(0); transition: max-width .2s ease, opacity .16s ease, transform .2s ease; }
 .n-layout-sider--collapsed .brand { height: 64px; padding: 0; justify-content: center; gap: 0; }
@@ -45,7 +46,9 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .managed-project-name strong { color: var(--n-text-color); font-size: 14px; font-weight: 600; }
 .managed-project-name small { width: 100%; overflow: hidden; color: var(--n-text-color-3); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .managed-project-actions { display: flex; align-items: center; gap: 4px; }
-.project-modal { width: min(640px, calc(100vw - 48px)); }
+.project-modal { width: min(640px, calc(100vw - 48px)); max-height: 85vh; overflow: hidden; }
+.project-modal .n-card__content-scrollbar { max-height: calc(85vh - 172px); overscroll-behavior: contain; }
+.project-modal .n-card-content > .n-space > div:last-child { display: none; }
 .project-settings-token { margin-top: 24px; }
 .project-advanced-settings { margin-top: 4px; }
 .project-advanced-settings .modal-hint { margin: 0 0 16px; }

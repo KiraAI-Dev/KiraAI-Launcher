@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import type { AppUpdater } from 'electron-updater'
 import { decryptAccessToken, encryptAccessToken, getInstanceRuntimeDuration, getInstanceVersion, getLocalAccessToken, getWebuiSessionToken, readJson, requestWithTimeout, verifyCloudProject } from './cloud.js'
 import { checkEnvironment, installEnvironmentTool } from './environment.js'
-import { getLocalProject, saveLocalWebuiPort } from './local-project.js'
+import { getLocalProject, getLocalWebuiUrl, normalizeLocalWebuiHost, saveLocalWebuiSettings } from './local-project.js'
 import { downloadAndRegisterProject as downloadProject } from './project-download.js'
 import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
 import { defaultSettings, loadSettings, saveSettings } from './settings.js'
@@ -238,7 +238,7 @@ async function getProjectRuntimeDetails(project: StoredProject): Promise<Pick<Ma
       const localProject = await getLocalProject(project.projectPath)
       localVersion = localProject.version
       if (!launchedProjects.has(project.id)) return localVersion ? { version: localVersion } : {}
-      target = `http://127.0.0.1:${localProject.port ?? 5267}`
+      target = getLocalWebuiUrl(localProject.host, localProject.port ?? 5267)
       accessToken = await getLocalAccessToken(project.projectPath)
     } else {
       target = project.url
@@ -343,7 +343,8 @@ async function startLocalProject(id: string): Promise<void> {
   const project = (await loadProjects()).find((item) => item.id === id)
   if (!project || project.type !== 'local' || !project.projectPath) throw new Error('LOCAL_PROJECT_NOT_FOUND')
   const localProject = await getLocalProject(project.projectPath)
-  await ensureLocalPortAvailable(localProject.port ?? 5267)
+  const localTarget = getLocalWebuiUrl(localProject.host, localProject.port ?? 5267)
+  await ensureLocalPortAvailable(localProject.port ?? 5267, localProject.host)
   const venvPythonPath = path.join(project.projectPath, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
   const detectedPackageIndex = await selectFastestPackageIndex()
   const packageIndex = detectedPackageIndex ?? DEFAULT_PYTHON_PACKAGE_INDEX_URL
@@ -388,10 +389,10 @@ async function startLocalProject(id: string): Promise<void> {
   child.once('exit', () => launchedProjects.delete(id))
   child.once('error', () => launchedProjects.delete(id))
   await waitForSpawn(child)
-  await waitForLocalWebui(localProject.port ?? 5267, child)
+  await waitForLocalWebui(localTarget, child)
 }
 
-function ensureLocalPortAvailable(port: number): Promise<void> {
+function ensureLocalPortAvailable(port: number, host: string | undefined): Promise<void> {
   return new Promise((resolve, reject) => {
     const server = createServer()
     server.once('error', () => reject(new Error('LOCAL_PORT_UNAVAILABLE')))
@@ -401,7 +402,7 @@ function ensureLocalPortAvailable(port: number): Promise<void> {
         else resolve()
       })
     })
-    server.listen({ port, host: '127.0.0.1', exclusive: true })
+    server.listen({ port, host: host ?? '0.0.0.0', exclusive: true })
   })
 }
 
@@ -417,7 +418,7 @@ async function stopLocalProject(id: string): Promise<void> {
       const localProject = await getLocalProject(project.projectPath)
       if (await requestGracefulLocalShutdown(
         project.projectPath,
-        localProject.port ?? 5267,
+        getLocalWebuiUrl(localProject.host, localProject.port ?? 5267),
       )) {
         await waitForProcessExit(child, LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS)
         return
@@ -439,9 +440,8 @@ async function stopLocalProject(id: string): Promise<void> {
 
 async function requestGracefulLocalShutdown(
   projectPath: string,
-  port: number,
+  target: string,
 ): Promise<boolean> {
-  const target = `http://127.0.0.1:${port}`
   try {
     const sessionToken = await getWebuiSessionToken(target, await getLocalAccessToken(projectPath))
     if (!sessionToken) return false
@@ -591,12 +591,12 @@ function waitForSpawn(child: ReturnType<typeof spawn>): Promise<void> {
   })
 }
 
-async function waitForLocalWebui(port: number, child: ReturnType<typeof spawn>): Promise<void> {
+async function waitForLocalWebui(target: string, child: ReturnType<typeof spawn>): Promise<void> {
   const deadline = Date.now() + LOCAL_STARTUP_TIMEOUT_MS
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.killed) throw new Error('LOCAL_START_FAILED')
     try {
-      const response = await requestWithTimeout(`http://127.0.0.1:${port}/api/health`)
+      const response = await requestWithTimeout(`${target}/api/health`)
       const health = await readJson(response) as { status?: unknown } | null
       if (response.ok && health?.status === 'ok') return
     } catch {
@@ -636,7 +636,8 @@ async function openAuthenticatedWebui(project: StoredProject, target: string, se
 async function openProject(id: string): Promise<void> {
   const project = (await loadProjects()).find((item) => item.id === id)
   if (!project) throw new Error('PROJECT_NOT_FOUND')
-  const target = project.type === 'cloud' ? project.url : `http://127.0.0.1:${project.port ?? 5267}`
+  const localProject = project.type === 'local' && project.projectPath ? await getLocalProject(project.projectPath) : undefined
+  const target = project.type === 'cloud' ? project.url : localProject ? getLocalWebuiUrl(localProject.host, localProject.port ?? 5267) : undefined
   if (!target) throw new Error('PROJECT_URL_UNAVAILABLE')
   if ((await loadSettings()).webuiOpenMode === 'browser') {
     await shell.openExternal(target)
@@ -687,7 +688,7 @@ async function openProjectFolder(id: string): Promise<void> {
 
 async function updateProject(value: unknown): Promise<ManagedProject> {
   if (typeof value !== 'object' || value === null) throw new Error('PROJECT_SETTINGS_INVALID')
-  const { id, name, port, url, accessToken, launchArgs, environmentVariables } = value as { id?: unknown; name?: unknown; port?: unknown; url?: unknown; accessToken?: unknown; launchArgs?: unknown; environmentVariables?: unknown }
+  const { id, name, host, port, url, accessToken, launchArgs, environmentVariables } = value as { id?: unknown; name?: unknown; host?: unknown; port?: unknown; url?: unknown; accessToken?: unknown; launchArgs?: unknown; environmentVariables?: unknown }
   if (typeof id !== 'string' || typeof name !== 'string') throw new Error('PROJECT_SETTINGS_INVALID')
   if (typeof accessToken !== 'undefined' && typeof accessToken !== 'string') throw new Error('PROJECT_SETTINGS_INVALID')
   const projectName = name.trim()
@@ -704,11 +705,14 @@ async function updateProject(value: unknown): Promise<ManagedProject> {
   let updatedProject: StoredProject
 
   if (project.type === 'local') {
+    if (typeof host !== 'string') throw new Error('PROJECT_SETTINGS_INVALID')
+    const normalizedHost = normalizeLocalWebuiHost(host)
+    if (!normalizedHost) throw new Error('PROJECT_SETTINGS_INVALID')
     if (typeof port !== 'number' || !Number.isInteger(port) || port < 1 || port > 65_535) throw new Error('PROJECT_PORT_INVALID')
-    if (launchedProjects.has(project.id) && port !== project.port) throw new Error('PROJECT_RUNNING')
+    if (launchedProjects.has(project.id) && (normalizedHost !== project.host || port !== project.port)) throw new Error('PROJECT_RUNNING')
     if (!project.projectPath) throw new Error('LOCAL_PROJECT_NOT_FOUND')
-    if (port !== project.port) await saveLocalWebuiPort(project.projectPath, port)
-    updatedProject = { ...project, name: projectName, port, launchArgs: safeLaunchArgs, environmentVariables: safeEnvironmentVariables }
+    if (normalizedHost !== project.host || port !== project.port) await saveLocalWebuiSettings(project.projectPath, normalizedHost, port)
+    updatedProject = { ...project, name: projectName, host: normalizedHost, port, launchArgs: safeLaunchArgs, environmentVariables: safeEnvironmentVariables }
   } else {
     if (typeof url !== 'string') throw new Error('PROJECT_SETTINGS_INVALID')
     const normalizedUrl = await verifyCloudProject(url)
@@ -821,6 +825,15 @@ app.whenReady().then(async () => {
     return toManagedProject(await registerProject({ name: name.trim(), type: 'cloud', url: normalizedUrl, ...tokenDetails }))
   })
   ipcMain.handle('projects:update', (_event, value: unknown) => updateProject(value))
+  ipcMain.handle('projects:get-access-token', async (_event, id: unknown) => {
+    if (typeof id !== 'string') throw new Error('PROJECT_ID_INVALID')
+    const project = (await loadProjects()).find((item) => item.id === id)
+    if (!project) throw new Error('PROJECT_NOT_FOUND')
+    if (project.type !== 'cloud') throw new Error('PROJECT_SETTINGS_INVALID')
+    const accessToken = decryptAccessToken(project)
+    if (!accessToken) throw new Error('CLOUD_TOKEN_DECRYPT_FAILED')
+    return accessToken
+  })
   ipcMain.handle('projects:start', (_event, id: unknown) => {
     if (typeof id !== 'string') throw new Error('PROJECT_ID_INVALID')
     return startLocalProject(id)

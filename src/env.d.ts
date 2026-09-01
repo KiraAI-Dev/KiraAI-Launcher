@@ -14,9 +14,11 @@ interface ManagedProject {
   type: 'local' | 'cloud'
   projectPath?: string
   url?: string
+  host?: string
   port?: number
   launchArgs?: string[]
   environmentVariables?: Record<string, string>
+  hasSavedAccessToken?: boolean
   version?: string
   runtimeStartedAt?: number
   createdAt: string
@@ -64,7 +66,8 @@ interface Window {
       chooseDownloadDirectory: () => Promise<string | null>
       download: (value: { parentPath: string; name: string }) => Promise<ManagedProject>
       connectCloud: (value: { name: string; url: string; accessToken?: string }) => Promise<ManagedProject>
-      update: (value: { id: string; name: string; port?: number | null; url?: string; accessToken?: string; launchArgs?: string[]; environmentVariables?: Record<string, string> }) => Promise<ManagedProject>
+      update: (value: { id: string; name: string; host?: string; port?: number | null; url?: string; accessToken?: string; launchArgs?: string[]; environmentVariables?: Record<string, string> }) => Promise<ManagedProject>
+      getAccessToken: (id: string) => Promise<string>
       start: (id: string) => Promise<void>
       stop: (id: string) => Promise<void>
       open: (id: string) => Promise<void>
