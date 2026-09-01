@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs'
+import { isIP } from 'node:net'
 import path from 'node:path'
 import type { ManagedProject } from './types.js'
 
@@ -7,7 +8,8 @@ const defaultHost = '0.0.0.0'
 export function normalizeLocalWebuiHost(value: string): string | undefined {
   const host = value.trim()
   if (!host || host.length > 253 || /[\s/@?#\\]/.test(host)) return undefined
-  if (host.includes(':')) return /^[0-9a-fA-F:]+$/.test(host) ? host : undefined
+  if (host.includes(':')) return isIP(host) === 6 ? host : undefined
+  if (/^[0-9.]+$/.test(host)) return isIP(host) === 4 ? host : undefined
   return /^[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$/.test(host) && !host.includes('..') ? host : undefined
 }
 
