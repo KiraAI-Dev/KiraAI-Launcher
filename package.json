@@ -16,7 +16,9 @@
     "dist:win": "npm run build && npm run package:win:x64 && npm run package:win:arm64",
     "package:win:x64": "electron-builder --win --x64 --publish never",
     "package:win:arm64": "electron-builder --win --arm64 --publish never --config.publish.channel=latest-arm64",
-    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:mac": "npm run build && npm run package:mac:dmg && npm run package:mac:zip",
+    "package:mac:dmg": "electron-builder --mac dmg --publish never",
+    "package:mac:zip": "electron-builder --mac zip --publish never --config.extraMetadata.kiraPortable=true",
     "dist:linux": "npm run build && electron-builder --linux --publish never",
     "publish": "npm run build && electron-builder --publish always"
   },

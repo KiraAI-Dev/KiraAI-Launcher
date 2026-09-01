@@ -21,6 +21,20 @@ const { autoUpdater } = require('electron-updater') as { autoUpdater: AppUpdater
 const isDev = !app.isPackaged
 app.setName('KiraAI Launcher')
 
+function isPortableBuild(): boolean {
+  if (process.env.PORTABLE_EXECUTABLE_DIR || process.env.APPIMAGE) return true
+  try {
+    const metadata = require(path.join(app.getAppPath(), 'package.json')) as { kiraPortable?: unknown }
+    return metadata.kiraPortable === true
+  } catch {
+    return false
+  }
+}
+
+function canUseAutoUpdater(): boolean {
+  return !isDev && !isPortableBuild()
+}
+
 type GitHubReleaseResponse = {
   tag_name?: unknown
   html_url?: unknown
@@ -174,7 +188,7 @@ function updaterText() {
 }
 
 function configureAutoUpdater() {
-  if (isDev) return
+  if (!canUseAutoUpdater()) return
   // Windows update metadata has no architecture suffix. Keep ARM64 on a dedicated channel
   // so it cannot download the x64 installer from the shared GitHub release.
   if (process.platform === 'win32' && process.arch === 'arm64') autoUpdater.channel = 'latest-arm64'
@@ -292,7 +306,7 @@ async function checkLauncherRelease(): Promise<LauncherUpdateCheck> {
 async function checkLauncherUpdate(): Promise<LauncherUpdateCheck> {
   if (updateCheckPromise) return updateCheckPromise
   updateCheckPromise = (async () => {
-    if (isDev) return checkLauncherRelease()
+    if (!canUseAutoUpdater()) return checkLauncherRelease()
     try {
       const result = await autoUpdater.checkForUpdates()
       const latestVersion = result?.updateInfo.version
@@ -833,7 +847,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('environment:install', (_event, value: unknown) => installEnvironmentTool(value))
   createTray()
   createWindow()
-  if (currentSettings.autoUpdate) void checkLauncherUpdate().catch(() => undefined)
+  if (currentSettings.autoUpdate && canUseAutoUpdater()) void checkLauncherUpdate().catch(() => undefined)
   app.on('activate', showMainWindow)
 })
 app.on('before-quit', (event) => {
