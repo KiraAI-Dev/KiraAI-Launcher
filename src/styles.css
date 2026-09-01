@@ -45,7 +45,9 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .managed-project-name strong { color: var(--n-text-color); font-size: 14px; font-weight: 600; }
 .managed-project-name small { width: 100%; overflow: hidden; color: var(--n-text-color-3); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .managed-project-actions { display: flex; align-items: center; gap: 4px; }
-.project-modal { width: min(640px, calc(100vw - 48px)); }
+.project-modal { width: min(640px, calc(100vw - 48px)); max-height: 85vh; overflow: hidden; }
+.project-modal .n-card-content { max-height: calc(85vh - 172px); overflow-y: auto; overscroll-behavior: contain; }
+.project-modal .n-card-content > .n-space > div:last-child { display: none; }
 .project-settings-token { margin-top: 24px; }
 .project-advanced-settings { margin-top: 4px; }
 .project-advanced-settings .modal-hint { margin: 0 0 16px; }
