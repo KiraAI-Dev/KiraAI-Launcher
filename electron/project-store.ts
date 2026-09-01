@@ -19,7 +19,7 @@ function sanitizeProject(value: unknown): StoredProject | null {
   const launchArgs = sanitizeLaunchArgs(candidate.launchArgs)
   const environmentVariables = sanitizeEnvironmentVariables(candidate.environmentVariables)
   if (launchArgs === null || environmentVariables === null) return null
-  return { id: candidate.id, name: candidate.name, type, projectPath: candidate.projectPath, url: candidate.url, port: typeof candidate.port === 'number' ? candidate.port : undefined, launchArgs, environmentVariables, encryptedAccessToken: typeof candidate.encryptedAccessToken === 'string' ? candidate.encryptedAccessToken : undefined, createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString() }
+  return { id: candidate.id, name: candidate.name, type, projectPath: candidate.projectPath, url: candidate.url, host: typeof candidate.host === 'string' ? candidate.host : undefined, port: typeof candidate.port === 'number' ? candidate.port : undefined, launchArgs, environmentVariables, encryptedAccessToken: typeof candidate.encryptedAccessToken === 'string' ? candidate.encryptedAccessToken : undefined, createdAt: typeof candidate.createdAt === 'string' ? candidate.createdAt : new Date().toISOString() }
 }
 
 export function sanitizeLaunchArgs(value: unknown): string[] | null {
@@ -52,7 +52,7 @@ export async function loadProjects(): Promise<StoredProject[]> {
       if (project.type !== 'local' || !project.projectPath) return project
       try {
         const detected = await getLocalProject(project.projectPath)
-        return { ...project, port: detected.port }
+        return { ...project, host: detected.host, port: detected.port }
       } catch {
         return project
       }

@@ -2,6 +2,21 @@ import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { ManagedProject } from './types.js'
 
+const defaultHost = '0.0.0.0'
+
+export function normalizeLocalWebuiHost(value: string): string | undefined {
+  const host = value.trim()
+  if (!host || host.length > 253 || /[\s/@?#\\]/.test(host)) return undefined
+  if (host.includes(':')) return /^[0-9a-fA-F:]+$/.test(host) ? host : undefined
+  return /^[a-zA-Z0-9](?:[a-zA-Z0-9.-]*[a-zA-Z0-9])?$/.test(host) && !host.includes('..') ? host : undefined
+}
+
+export function getLocalWebuiUrl(host: string | undefined, port: number): string {
+  const configuredHost = host || defaultHost
+  const urlHost = configuredHost === '0.0.0.0' ? '127.0.0.1' : configuredHost === '::' ? '[::1]' : configuredHost.includes(':') ? `[${configuredHost}]` : configuredHost
+  return `http://${urlHost}:${port}`
+}
+
 export async function getLocalProject(projectPath: string): Promise<Omit<ManagedProject, 'id' | 'createdAt'>> {
   const mainPath = path.join(projectPath, 'main.py')
   const requirementsPath = path.join(projectPath, 'requirements.txt')
@@ -10,9 +25,11 @@ export async function getLocalProject(projectPath: string): Promise<Omit<Managed
   } catch {
     throw new Error('LOCAL_PROJECT_INVALID')
   }
+  let host = defaultHost
   let port = 5267
   try {
-    const config = JSON.parse(await fs.readFile(path.join(projectPath, 'data', 'webui.json'), 'utf8')) as { port?: unknown }
+    const config = JSON.parse(await fs.readFile(path.join(projectPath, 'data', 'webui.json'), 'utf8')) as { host?: unknown; port?: unknown }
+    if (typeof config.host === 'string') host = normalizeLocalWebuiHost(config.host) ?? defaultHost
     if (typeof config.port === 'number' && Number.isInteger(config.port) && config.port > 0 && config.port < 65536) port = config.port
   } catch {
     // KiraAI uses port 5267 when no webui.json exists yet.
@@ -24,10 +41,10 @@ export async function getLocalProject(projectPath: string): Promise<Omit<Managed
   } catch {
     // The project is still manageable when its version cannot be read.
   }
-  return { name: path.basename(projectPath), type: 'local', projectPath, port, version }
+  return { name: path.basename(projectPath), type: 'local', projectPath, host, port, version }
 }
 
-export async function saveLocalWebuiPort(projectPath: string, port: number): Promise<void> {
+export async function saveLocalWebuiSettings(projectPath: string, host: string, port: number): Promise<void> {
   const configPath = path.join(projectPath, 'data', 'webui.json')
   let config: Record<string, unknown> = {}
   try {
@@ -42,7 +59,7 @@ export async function saveLocalWebuiPort(projectPath: string, port: number): Pro
   try {
     const temporaryPath = `${configPath}.tmp`
     await fs.mkdir(path.dirname(configPath), { recursive: true })
-    await fs.writeFile(temporaryPath, `${JSON.stringify({ ...config, port }, null, 2)}\n`, 'utf8')
+    await fs.writeFile(temporaryPath, `${JSON.stringify({ ...config, host, port }, null, 2)}\n`, 'utf8')
     await fs.rename(temporaryPath, configPath)
   } catch {
     throw new Error('PROJECT_SETTINGS_SAVE_FAILED')

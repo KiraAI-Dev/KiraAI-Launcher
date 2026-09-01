@@ -11,6 +11,7 @@ export type ManagedProject = {
   type: ProjectType
   projectPath?: string
   url?: string
+  host?: string
   port?: number
   launchArgs?: string[]
   environmentVariables?: Record<string, string>
