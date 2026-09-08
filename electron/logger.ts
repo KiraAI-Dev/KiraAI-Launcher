@@ -71,9 +71,9 @@ export async function readLauncherLog(): Promise<LauncherLog> {
       const firstNewline = content.indexOf('\n')
       if (firstNewline >= 0) content = content.slice(firstNewline + 1)
     }
-    return { path: logPath, content }
+    return { content }
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { path: logPath, content: '' }
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { content: '' }
     throw new Error('LOG_READ_FAILED')
   }
 }

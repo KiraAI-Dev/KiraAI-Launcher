@@ -63,7 +63,6 @@ export type LauncherUpdateCheck = {
 }
 
 export type LauncherLog = {
-  path: string
   content: string
 }
 

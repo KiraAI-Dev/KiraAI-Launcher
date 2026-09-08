@@ -54,7 +54,6 @@ interface LauncherUpdateCheck {
 }
 
 interface LauncherLog {
-  path: string
   content: string
 }
 
