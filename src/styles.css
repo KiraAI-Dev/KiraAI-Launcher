@@ -41,10 +41,6 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .about-copy h1 { margin: 0; color: var(--n-text-color); font-size: 24px; font-weight: 600; }
 .about-copy p { margin: 7px 0 0; color: var(--n-text-color-3); font-size: 14px; }
 .about-update-result { width: 100%; margin-top: 6px; text-align: left; }
-.about-release-notes { position: relative; left: 50%; width: min(600px, calc(100vw - 390px)); padding: 16px; border: 1px solid var(--n-border-color); border-radius: 8px; background: #fafafc; transform: translateX(-50%); text-align: left; }
-.about-release-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: var(--n-text-color); }
-.about-release-body { max-height: 260px; overflow: auto; color: var(--n-text-color-2); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; white-space: pre-wrap; }
-.dark-app .about-release-notes { background: #18181c; }
 .environment-card { min-height: 224px; }
 .environment-card strong { color: var(--n-text-color); font-size: 16px; font-weight: 600; }
 .environment-path { display: flex; flex-direction: column; gap: 5px; min-width: 0; color: var(--n-text-color-3); font-size: 12px; }

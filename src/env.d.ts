@@ -88,6 +88,7 @@ interface Window {
       getStatus: () => Promise<LauncherUpdateCheck | null>
       onStatus: (listener: (result: LauncherUpdateCheck) => void) => () => void
       install: () => Promise<void>
+      openReleaseLink: (url: string) => Promise<void>
     }
     environment: {
       check: () => Promise<EnvironmentTool[]>

@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
       return () => ipcRenderer.removeListener('updates:status', handler)
     },
     install: () => ipcRenderer.invoke('updates:install'),
+    openReleaseLink: (url: string) => ipcRenderer.invoke('updates:open-release-link', url),
   },
   environment: {
     check: () => ipcRenderer.invoke('environment:check'),

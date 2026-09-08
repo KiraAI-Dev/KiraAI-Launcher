@@ -54,6 +54,7 @@ let updateDownloaded = false
 
 const LAUNCHER_RELEASES_API_URL = 'https://api.github.com/repos/KiraAI-Dev/KiraAI-Launcher/releases/latest'
 const LAUNCHER_RELEASES_URL = 'https://github.com/KiraAI-Dev/KiraAI-Launcher/releases/latest'
+const LAUNCHER_REPOSITORY_URL = 'https://github.com/KiraAI-Dev/KiraAI-Launcher/'
 const PROJECT_SETUP_TIMEOUT_MS = 5 * 60 * 1000
 const LOCAL_STARTUP_TIMEOUT_MS = 60 * 1000
 const LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10 * 1000
@@ -351,6 +352,18 @@ async function installLauncherUpdate(): Promise<void> {
   } catch {
     throw new Error('LAUNCHER_UPDATE_INSTALL_FAILED')
   }
+}
+
+async function openLauncherReleaseLink(value: unknown): Promise<void> {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('LAUNCHER_RELEASE_LINK_INVALID')
+  let target: URL
+  try {
+    target = new URL(value, LAUNCHER_REPOSITORY_URL)
+  } catch {
+    throw new Error('LAUNCHER_RELEASE_LINK_INVALID')
+  }
+  if (!['http:', 'https:'].includes(target.protocol)) throw new Error('LAUNCHER_RELEASE_LINK_INVALID')
+  await shell.openExternal(target.toString())
 }
 
 function runCommand(command: string, args: string[], timeout = 8000): Promise<{ stdout: string; stderr: string }> {
@@ -896,6 +909,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('updates:check', checkLauncherUpdate)
   ipcMain.handle('updates:get-status', () => latestUpdateCheck)
   ipcMain.handle('updates:install', installLauncherUpdate)
+  ipcMain.handle('updates:open-release-link', (_event, value: unknown) => openLauncherReleaseLink(value))
   ipcMain.handle('environment:check', checkEnvironment)
   ipcMain.handle('environment:install', async (_event, value: unknown) => {
     try {
