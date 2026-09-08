@@ -25,6 +25,14 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
   },
   updates: {
     check: () => ipcRenderer.invoke('updates:check'),
+    getStatus: () => ipcRenderer.invoke('updates:get-status'),
+    onStatus: (listener: (result: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: unknown) => listener(result)
+      ipcRenderer.on('updates:status', handler)
+      return () => ipcRenderer.removeListener('updates:status', handler)
+    },
+    install: () => ipcRenderer.invoke('updates:install'),
+    openReleaseLink: (url: string) => ipcRenderer.invoke('updates:open-release-link', url),
   },
   environment: {
     check: () => ipcRenderer.invoke('environment:check'),

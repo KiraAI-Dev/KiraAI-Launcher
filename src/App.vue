@@ -2,6 +2,7 @@
 import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { darkTheme, enUS, NButton, NDialogProvider, NIcon, NMessageProvider, NTag, useDialog, useMessage, zhCN } from 'naive-ui'
 import type { DataTableColumns, MenuOption } from 'naive-ui'
+import LauncherReleaseNotes from './components/LauncherReleaseNotes.vue'
 import { messages, projectAdvancedSettingsMessages, type Language } from './i18n/messages'
 import { AddOutline, CloudOutline, CloudUploadOutline, CodeSlashOutline, CubeOutline, DocumentTextOutline, DownloadOutline, FolderOpenOutline, HardwareChipOutline, HomeOutline, InformationCircleOutline, LanguageOutline, LayersOutline, MoonOutline, OpenOutline, PlayOutline, RefreshOutline, RocketOutline, SettingsOutline, StopOutline, SunnyOutline, TrashOutline } from '@vicons/ionicons5'
 
@@ -47,8 +48,11 @@ const projectSettingsEnvironmentVariables = ref('')
 const projectSettingsSaving = ref(false)
 const projectsRefreshing = ref(false)
 const updateChecking = ref(false)
+const updateInstalling = ref(false)
 const updateCheckResult = ref<LauncherUpdateCheck | null>(null)
 const updateCheckError = ref('')
+const updateAvailable = ref(false)
+let updateRestartPromptShown = false
 const messageHost = ref<{ success: (content: string) => unknown } | null>(null)
 const dialogHost = ref<ReturnType<typeof useDialog> | null>(null)
 const MessageHost = defineComponent({
@@ -106,7 +110,12 @@ const menuOptions = computed<MenuOption[]>(() => [
 ])
 const settingsMenu = computed<MenuOption[]>(() => [
   { label: t.value.settings, key: 'settings', icon: () => h(SettingsOutline) },
-  { label: aboutText.value.menu, key: 'about', icon: () => h(InformationCircleOutline) },
+  {
+    label: aboutText.value.menu,
+    key: 'about',
+    icon: () => h(InformationCircleOutline),
+    ...(updateAvailable.value ? { extra: () => h('span', { class: 'about-update-dot', 'aria-hidden': 'true' }) } : {}),
+  },
 ])
 const languageOptions = computed(() => [{ label: t.value.chinese, value: 'zh-CN' }, { label: t.value.english, value: 'en-US' }])
 const themeOptions = computed(() => [{ label: t.value.system, value: 'system' }, { label: t.value.light, value: 'light' }, { label: t.value.dark, value: 'dark' }])
@@ -209,11 +218,41 @@ async function checkForUpdates() {
   updateCheckResult.value = null
   try {
     updateCheckResult.value = await requireLauncherBridge().updates.check()
+    updateAvailable.value = updateCheckResult.value.updateAvailable
   } catch {
     updateCheckError.value = aboutText.value.failed
   } finally {
     updateChecking.value = false
   }
+}
+
+async function installUpdate() {
+  updateInstalling.value = true
+  updateCheckError.value = ''
+  try {
+    await requireLauncherBridge().updates.install()
+  } catch {
+    updateCheckError.value = aboutText.value.updateFailed
+  } finally {
+    updateInstalling.value = false
+  }
+}
+
+function openReleaseNotesLink(url: string) {
+  void requireLauncherBridge().updates.openReleaseLink(url).catch(() => undefined)
+}
+
+function showUpdateRestartPrompt(result: LauncherUpdateCheck) {
+  const host = dialogHost.value
+  if (!result.downloaded || updateInstalling.value || updateRestartPromptShown || !host) return
+  updateRestartPromptShown = true
+  host.info({
+    title: aboutText.value.updateReadyTitle,
+    content: aboutText.value.updateReadyMessage,
+    positiveText: aboutText.value.restartNow,
+    negativeText: aboutText.value.later,
+    onPositiveClick: () => { void installUpdate() },
+  })
 }
 
 function upsertManagedProject(project: ManagedProject) {
@@ -563,10 +602,23 @@ watch(activeView, (view) => {
 })
 
 let runtimeTimer: number | undefined
+let removeUpdateStatusListener: (() => void) | undefined
 
 onMounted(() => {
   systemThemeQuery.addEventListener('change', syncSystemTheme)
   runtimeTimer = window.setInterval(() => { runtimeNow.value = Date.now() }, 1000)
+  const updates = window.kiraLauncher?.updates
+  removeUpdateStatusListener = updates?.onStatus((result) => {
+    updateAvailable.value = result.updateAvailable
+    if (result.updateAvailable) updateCheckResult.value = result
+    showUpdateRestartPrompt(result)
+  })
+  void updates?.getStatus().then((result) => {
+    if (!result) return
+    updateAvailable.value = result.updateAvailable
+    if (result.updateAvailable) updateCheckResult.value = result
+    showUpdateRestartPrompt(result)
+  })
   void restoreSettings()
   void refreshManagedProjects()
   void refreshEnvironment()
@@ -574,6 +626,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   systemThemeQuery.removeEventListener('change', syncSystemTheme)
   if (runtimeTimer) window.clearInterval(runtimeTimer)
+  removeUpdateStatusListener?.()
 })
 </script>
 
@@ -611,7 +664,7 @@ onBeforeUnmount(() => {
             <section><h2 class="settings-section-title">{{ t.appearance }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="isDark ? MoonOutline : SunnyOutline" size="22" /><div><h3>{{ t.theme }}</h3><p>{{ t.themeSub }}</p></div></div><n-select v-model:value="themeMode" :options="themeOptions" style="width: 190px" /></div><n-text depth="3" class="setting-hint">{{ t.themeHint }}</n-text></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><span class="palette-dot" :style="{ backgroundColor: activePalette.primary }"></span><div><h3>{{ t.themeColor }}</h3><p>{{ t.themeColorSub }}</p></div></div><n-select v-model:value="themeColor" :options="colorOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="LanguageOutline" size="22" /><div><h3>{{ t.language }}</h3><p>{{ t.languageSub }}</p></div></div><n-select v-model:value="language" :options="languageOptions" style="width: 190px" /></div><n-text depth="3" class="setting-hint">{{ t.languageHint }}</n-text></n-card></n-space></section>
             <section><h2 class="settings-section-title">{{ t.behavior }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.webuiOpenMode }}</h3><p>{{ t.webuiOpenModeSub }}</p></div></div><n-select v-model:value="webuiOpenMode" :options="webuiOpenModeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeWhen }}</h3><p>{{ t.closeWhenSub }}</p></div></div><n-select v-model:value="closeAction" :options="closeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeReminder }}</h3><p>{{ t.closeReminderSub }}</p></div></div><n-switch v-model:value="closeReminder" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoUpdate }}</h3><p>{{ t.autoUpdateSub }}</p></div></div><n-switch v-model:value="autoUpdate" /></div></n-card></n-space></section>
           </n-space></template>
-          <template v-else-if="activeView === 'about'"><div class="about-page"><n-card class="about-card" :bordered="false"><n-space vertical align="center" :size="18"><img src="/icon.png" class="about-icon" alt="KiraAI Launcher" /><div class="about-copy"><h1>{{ aboutText.title }}</h1><p>{{ aboutText.version }} {{ launcherVersion }}</p></div><n-button type="primary" :loading="updateChecking" @click="checkForUpdates"><template #icon><n-icon :component="RefreshOutline" /></template>{{ updateChecking ? aboutText.checking : aboutText.check }}</n-button><n-alert v-if="updateCheckResult" :type="updateCheckResult.updateAvailable ? 'info' : 'success'" :show-icon="false" class="about-update-result">{{ updateCheckResult.updateAvailable ? aboutText.available.replace('{version}', updateCheckResult.latestVersion) : aboutText.latest.replace('{version}', updateCheckResult.latestVersion) }}</n-alert><n-alert v-else-if="updateCheckError" type="error" :show-icon="false" class="about-update-result">{{ updateCheckError }}</n-alert></n-space></n-card></div></template>
+          <template v-else-if="activeView === 'about'"><div class="about-page"><n-card class="about-card" :bordered="false"><n-space vertical align="center" :size="18"><img src="/icon.png" class="about-icon" alt="KiraAI Launcher" /><div class="about-copy"><h1>{{ aboutText.title }}</h1><p>{{ aboutText.version }} {{ launcherVersion }}</p></div><n-button type="primary" :loading="updateChecking || updateInstalling" @click="updateAvailable ? installUpdate() : checkForUpdates()"><template #icon><n-icon :component="updateAvailable ? DownloadOutline : RefreshOutline" /></template>{{ updateInstalling ? aboutText.updating : updateChecking ? aboutText.checking : updateAvailable ? aboutText.updateNow : aboutText.check }}</n-button><LauncherReleaseNotes v-if="updateCheckResult?.updateAvailable" :title="aboutText.releaseNotes" :version="updateCheckResult.latestVersion" :markdown="updateCheckResult.releaseNotes" :empty-text="aboutText.noReleaseNotes" @open-link="openReleaseNotesLink" /><n-alert v-if="updateCheckResult && !updateCheckResult.updateAvailable" type="success" :show-icon="false" class="about-update-result">{{ aboutText.latest.replace('{version}', updateCheckResult.latestVersion) }}</n-alert><n-alert v-if="updateCheckError" type="error" :show-icon="false" class="about-update-result">{{ updateCheckError }}</n-alert></n-space></n-card></div></template>
           <template v-else><div class="placeholder"><n-empty :description="`${viewTitle} ${t.moduleComing}`" size="large"><template #icon><n-icon :component="RocketOutline" /></template><n-button type="primary" @click="activeView = 'overview'">{{ t.backOverview }}</n-button></n-empty></div></template>
         </n-layout-content>
       </n-layout>
@@ -622,7 +675,7 @@ onBeforeUnmount(() => {
       <n-space v-else-if="projectCreationMode === 'download'" vertical :size="18"><n-form label-placement="top"><n-form-item :label="t.downloadDirectory"><n-input :value="downloadDirectory" readonly :placeholder="t.chooseDirectory"><template #suffix><n-button text type="primary" @click="chooseDownloadDirectory">{{ t.chooseDirectory }}</n-button></template></n-input></n-form-item><n-form-item :label="t.projectName"><n-input v-model:value="downloadProjectName" :placeholder="t.projectName" /><template #feedback>{{ t.projectNameHint }}</template></n-form-item></n-form><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="actionInProgress" @click="projectCreationMode = null">{{ t.back }}</n-button><n-button type="primary" :disabled="!downloadDirectory || !downloadProjectName.trim()" :loading="actionInProgress" @click="downloadProject">{{ t.downloadAndDeploy }}</n-button></n-space></n-space>
       <n-space v-else vertical :size="18"><n-form label-placement="top"><n-form-item :label="t.cloudName"><n-input v-model:value="cloudProjectName" :placeholder="t.cloudName" /></n-form-item><n-form-item :label="t.cloudUrl"><n-input v-model:value="cloudProjectUrl" placeholder="https://kira.example.com" /></n-form-item><n-form-item :label="cloudConnectionText.accessToken"><n-input v-model:value="cloudAccessToken" type="password" show-password-on="click" autocomplete="off" /><template #feedback>{{ cloudConnectionText.accessTokenHint }}</template></n-form-item></n-form><p class="modal-hint">{{ t.cloudHint }}</p><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="actionInProgress" @click="projectCreationMode = null">{{ t.back }}</n-button><n-button type="primary" :disabled="!cloudProjectName.trim() || !cloudProjectUrl.trim()" :loading="actionInProgress" @click="connectCloudProject">{{ t.connectInstance }}</n-button></n-space></n-space>
       </n-modal>
-      <n-modal v-model:show="showProjectSettingsModal" preset="card" :title="t.projectSettings" class="project-modal" content-scrollable :mask-closable="!projectSettingsSaving">
+      <n-modal v-model:show="showProjectSettingsModal" preset="card" :title="t.projectSettings" class="project-modal project-settings-modal" content-scrollable :mask-closable="!projectSettingsSaving">
         <n-space v-if="editingProject" vertical :size="18"><p class="modal-hint">{{ t.projectSettingsSub }}</p><n-form label-placement="top"><n-form-item :label="t.projectName"><n-input v-model:value="projectSettingsName" :placeholder="t.projectName" /></n-form-item><template v-if="editingProject.type === 'local'"><n-form-item :label="t.webuiHost"><n-input v-model:value="projectSettingsHost" placeholder="0.0.0.0" autocomplete="off" /><template #feedback>{{ t.webuiHostSub }}</template></n-form-item><n-form-item :label="t.webuiPort"><n-input-number v-model:value="projectSettingsPort" :min="1" :max="65535" :show-button="false" style="width: 100%" /><template #feedback>{{ t.webuiPortSub }}</template></n-form-item><n-collapse class="project-advanced-settings"><n-collapse-item :title="projectAdvancedSettingsText.title" name="advanced"><p class="modal-hint">{{ projectAdvancedSettingsText.subtitle }}</p><n-form-item :label="projectAdvancedSettingsText.launchArgs"><n-input v-model:value="projectSettingsLaunchArgs" placeholder="--env dev" /><template #feedback>{{ projectAdvancedSettingsText.launchArgsHint }}</template></n-form-item><n-form-item :label="projectAdvancedSettingsText.environmentVariables"><n-input v-model:value="projectSettingsEnvironmentVariables" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" /><template #feedback>{{ projectAdvancedSettingsText.environmentVariablesHint }}</template></n-form-item></n-collapse-item></n-collapse></template><template v-else><n-form-item :label="t.cloudUrl"><n-input v-model:value="projectSettingsUrl" placeholder="https://kira.example.com" /><template #feedback>{{ t.cloudUrlSub }}</template></n-form-item><n-form-item class="project-settings-token" :label="cloudConnectionText.accessToken"><n-input v-model:value="projectSettingsAccessToken" type="password" show-password-on="click" autocomplete="off" /><template #feedback>{{ hasSavedCloudAccessToken ? cloudConnectionText.accessTokenSavedHint : cloudConnectionText.accessTokenUpdateHint }}</template></n-form-item></template></n-form><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="projectSettingsSaving" @click="showProjectSettingsModal = false">{{ t.cancel }}</n-button><n-button type="primary" :disabled="!projectSettingsName.trim() || (editingProject.type === 'local' ? !projectSettingsHost.trim() || projectSettingsPort === null : !projectSettingsUrl.trim())" :loading="projectSettingsSaving" @click="saveProjectSettings">{{ t.save }}</n-button></n-space></n-space>
         <template #action><n-space justify="end"><n-button :disabled="projectSettingsSaving" @click="showProjectSettingsModal = false">{{ t.cancel }}</n-button><n-button type="primary" :disabled="!projectSettingsName.trim() || (editingProject?.type === 'local' ? !projectSettingsHost.trim() || projectSettingsPort === null : !projectSettingsUrl.trim())" :loading="projectSettingsSaving" @click="saveProjectSettings">{{ t.save }}</n-button></n-space></template>
       </n-modal>

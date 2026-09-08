@@ -17,6 +17,7 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .n-layout-sider--collapsed .n-menu-item-content::before { left: 0; right: 0; }
 .n-layout-sider .n-menu { padding: 0 8px; }
 .sider-bottom { margin-top: auto; padding-bottom: 14px; }
+.about-update-dot { display: inline-block; width: 6px; height: 6px; border-radius: 50%; background: #ff3b30; transform: translateY(-8px); }
 .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .page-heading h1 { margin: 0 0 8px; color: var(--n-text-color); font-size: 24px; line-height: 1.25; font-weight: 600; }
 .page-heading p { margin: 0; color: var(--n-text-color-3); font-size: 14px; }
@@ -35,7 +36,7 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .log-output { margin: 0; padding: 16px; overflow: auto; color: var(--n-text-color-2); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dark-app .log-output, .dark-app .log-empty { border-color: rgba(255, 255, 255, .09); background: #18181c; }
 .about-page { min-height: calc(100vh - 180px); display: grid; place-items: center; }
-.about-card { width: min(440px, 100%); padding: 26px 14px; text-align: center; }
+.about-card { width: min(640px, 100%); padding: 26px 14px; text-align: center; }
 .about-icon { width: 92px; height: 92px; border-radius: 20px; box-shadow: 0 10px 26px rgba(32, 128, 240, .24); }
 .about-copy h1 { margin: 0; color: var(--n-text-color); font-size: 24px; font-weight: 600; }
 .about-copy p { margin: 7px 0 0; color: var(--n-text-color-3); font-size: 14px; }
@@ -53,7 +54,7 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .managed-project-actions { display: flex; align-items: center; gap: 4px; }
 .project-modal { width: min(640px, calc(100vw - 48px)); max-height: 85vh; overflow: hidden; }
 .project-modal .n-card__content-scrollbar { max-height: calc(85vh - 172px); overscroll-behavior: contain; }
-.project-modal .n-card-content > .n-space > div:last-child { display: none; }
+.project-settings-modal .n-card-content > .n-space > div:last-child { display: none; }
 .project-settings-token { margin-top: 24px; }
 .project-advanced-settings { margin-top: 4px; }
 .project-advanced-settings .modal-hint { margin: 0 0 16px; }

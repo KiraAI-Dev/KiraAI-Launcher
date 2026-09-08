@@ -39,6 +39,7 @@ function canUseAutoUpdater(): boolean {
 type GitHubReleaseResponse = {
   tag_name?: unknown
   html_url?: unknown
+  body?: unknown
 }
 
 let currentSettings = defaultSettings
@@ -47,9 +48,13 @@ let tray: Tray | null = null
 let isQuitting = false
 let closePromptInProgress = false
 let updateCheckPromise: Promise<LauncherUpdateCheck> | null = null
-let updateRestartPromptShown = false
+let latestUpdateCheck: LauncherUpdateCheck | null = null
+let latestUpdateDownloadPromise: Promise<string[]> | null = null
+let updateDownloaded = false
 
 const LAUNCHER_RELEASES_API_URL = 'https://api.github.com/repos/KiraAI-Dev/KiraAI-Launcher/releases/latest'
+const LAUNCHER_RELEASES_URL = 'https://github.com/KiraAI-Dev/KiraAI-Launcher/releases/latest'
+const LAUNCHER_REPOSITORY_URL = 'https://github.com/KiraAI-Dev/KiraAI-Launcher/'
 const PROJECT_SETUP_TIMEOUT_MS = 5 * 60 * 1000
 const LOCAL_STARTUP_TIMEOUT_MS = 60 * 1000
 const LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS = 10 * 1000
@@ -172,22 +177,6 @@ function createTray() {
   tray.on('click', showMainWindow)
 }
 
-function updaterText() {
-  return currentSettings.language === 'zh-CN'
-    ? {
-        title: '更新已就绪',
-        message: 'KiraAI Launcher 的新版本已下载完成，重启后即可安装。',
-        restart: '立即重启',
-        later: '稍后',
-      }
-    : {
-        title: 'Update ready',
-        message: 'A new version of KiraAI Launcher has been downloaded and will be installed after restart.',
-        restart: 'Restart now',
-        later: 'Later',
-      }
-}
-
 function configureAutoUpdater() {
   if (!canUseAutoUpdater()) return
   // Windows update metadata has no architecture suffix. Keep ARM64 on a dedicated channel
@@ -195,22 +184,14 @@ function configureAutoUpdater() {
   if (process.platform === 'win32' && process.arch === 'arm64') autoUpdater.channel = 'latest-arm64'
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
+  autoUpdater.on('update-available', () => {
+    updateDownloaded = false
+  })
   autoUpdater.on('update-downloaded', () => {
-    if (updateRestartPromptShown) return
-    updateRestartPromptShown = true
-    const text = updaterText()
-    void dialog.showMessageBox({
-      type: 'info',
-      title: text.title,
-      message: text.message,
-      buttons: [text.restart, text.later],
-      defaultId: 0,
-      cancelId: 1,
-    }).then(({ response }) => {
-      if (response !== 0) return
-      isQuitting = true
-      autoUpdater.quitAndInstall()
-    })
+    updateDownloaded = true
+    if (!latestUpdateCheck?.updateAvailable) return
+    latestUpdateCheck = { ...latestUpdateCheck, downloaded: true }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updates:status', latestUpdateCheck)
   })
 }
 
@@ -281,6 +262,17 @@ function isNewerVersion(latestVersion: string, currentVersion: string): boolean 
   return false
 }
 
+function normalizeReleaseNotes(value: unknown): string {
+  if (typeof value === 'string') return value.trim()
+  if (!Array.isArray(value)) return ''
+  return value
+    .map((item) => typeof item === 'object' && item !== null && typeof (item as { note?: unknown }).note === 'string'
+      ? (item as { note: string }).note.trim()
+      : '')
+    .filter(Boolean)
+    .join('\n\n')
+}
+
 async function checkLauncherRelease(): Promise<LauncherUpdateCheck> {
   let response: Response
   try {
@@ -300,34 +292,78 @@ async function checkLauncherRelease(): Promise<LauncherUpdateCheck> {
     currentVersion,
     latestVersion: release.tag_name,
     updateAvailable: isNewerVersion(release.tag_name, currentVersion),
+    downloaded: false,
     releaseUrl: release.html_url,
+    releaseNotes: typeof release.body === 'string' ? release.body.trim() : '',
   }
 }
 
 async function checkLauncherUpdate(): Promise<LauncherUpdateCheck> {
   if (updateCheckPromise) return updateCheckPromise
   updateCheckPromise = (async () => {
-    if (!canUseAutoUpdater()) return checkLauncherRelease()
-    try {
-      const result = await autoUpdater.checkForUpdates()
-      const latestVersion = result?.updateInfo.version
-      if (typeof latestVersion !== 'string' || !latestVersion) throw new Error('INVALID_RESPONSE')
-      const currentVersion = app.getVersion()
-      return {
-        currentVersion,
-        latestVersion,
-        updateAvailable: isNewerVersion(latestVersion, currentVersion),
-        releaseUrl: '',
+    let updateCheck: LauncherUpdateCheck
+    if (!canUseAutoUpdater()) {
+      updateCheck = await checkLauncherRelease()
+    } else {
+      try {
+        const result = await autoUpdater.checkForUpdates()
+        const latestVersion = result?.updateInfo.version
+        if (typeof latestVersion !== 'string' || !latestVersion) throw new Error('INVALID_RESPONSE')
+        const currentVersion = app.getVersion()
+        const updateAvailable = isNewerVersion(latestVersion, currentVersion)
+        const release = updateAvailable ? await checkLauncherRelease().catch(() => null) : null
+        latestUpdateDownloadPromise = updateAvailable ? result?.downloadPromise ?? null : null
+        updateCheck = {
+          currentVersion,
+          latestVersion,
+          updateAvailable,
+          downloaded: updateAvailable && updateDownloaded,
+          releaseUrl: release?.releaseUrl ?? LAUNCHER_RELEASES_URL,
+          releaseNotes: release?.releaseNotes || normalizeReleaseNotes(result?.updateInfo.releaseNotes),
+        }
+      } catch {
+        throw new Error('LAUNCHER_UPDATE_CHECK_FAILED')
       }
-    } catch {
-      throw new Error('LAUNCHER_UPDATE_CHECK_FAILED')
     }
+    latestUpdateCheck = updateCheck
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updates:status', updateCheck)
+    return updateCheck
   })()
   try {
     return await updateCheckPromise
   } finally {
     updateCheckPromise = null
   }
+}
+
+async function installLauncherUpdate(): Promise<void> {
+  if (!latestUpdateCheck?.updateAvailable) throw new Error('LAUNCHER_UPDATE_NOT_AVAILABLE')
+  if (!canUseAutoUpdater()) {
+    await shell.openExternal(latestUpdateCheck.releaseUrl || LAUNCHER_RELEASES_URL)
+    return
+  }
+  try {
+    if (!updateDownloaded) {
+      if (latestUpdateDownloadPromise) await latestUpdateDownloadPromise
+      else await autoUpdater.downloadUpdate()
+    }
+    isQuitting = true
+    autoUpdater.quitAndInstall()
+  } catch {
+    throw new Error('LAUNCHER_UPDATE_INSTALL_FAILED')
+  }
+}
+
+async function openLauncherReleaseLink(value: unknown): Promise<void> {
+  if (typeof value !== 'string' || !value.trim()) throw new Error('LAUNCHER_RELEASE_LINK_INVALID')
+  let target: URL
+  try {
+    target = new URL(value, LAUNCHER_REPOSITORY_URL)
+  } catch {
+    throw new Error('LAUNCHER_RELEASE_LINK_INVALID')
+  }
+  if (!['http:', 'https:'].includes(target.protocol)) throw new Error('LAUNCHER_RELEASE_LINK_INVALID')
+  await shell.openExternal(target.toString())
 }
 
 function runCommand(command: string, args: string[], timeout = 8000): Promise<{ stdout: string; stderr: string }> {
@@ -871,6 +907,9 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('overview:load', loadOverview)
   ipcMain.handle('updates:check', checkLauncherUpdate)
+  ipcMain.handle('updates:get-status', () => latestUpdateCheck)
+  ipcMain.handle('updates:install', installLauncherUpdate)
+  ipcMain.handle('updates:open-release-link', (_event, value: unknown) => openLauncherReleaseLink(value))
   ipcMain.handle('environment:check', checkEnvironment)
   ipcMain.handle('environment:install', async (_event, value: unknown) => {
     try {
