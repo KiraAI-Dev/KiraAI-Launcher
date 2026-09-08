@@ -33,7 +33,7 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .logs-card .n-card__content { display: flex; min-height: 460px; flex-direction: column; gap: 16px; }
 .log-file-path { display: flex; min-width: 0; align-items: center; gap: 10px; color: var(--n-text-color-3); font-size: 12px; }
 .log-file-path code { overflow: hidden; color: var(--n-text-color-2); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
-.log-output { height: calc(100vh - 265px); min-height: 260px; max-height: 620px; margin: 0; padding: 16px; overflow: auto; border: 1px solid var(--n-border-color); border-radius: 8px; color: var(--n-text-color-2); background: var(--n-code-color); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.65; white-space: pre-wrap; word-break: break-word; }
+.log-output { height: calc(100vh - 265px); min-height: 260px; max-height: 620px; margin: 0; padding: 16px; overflow: auto; border: 1px solid var(--n-border-color); border-radius: 8px; color: var(--n-text-color-2); background: var(--n-code-color); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .about-page { min-height: calc(100vh - 180px); display: grid; place-items: center; }
 .about-card { width: min(440px, 100%); padding: 26px 14px; text-align: center; }
 .about-icon { width: 92px; height: 92px; border-radius: 20px; box-shadow: 0 10px 26px rgba(32, 128, 240, .24); }

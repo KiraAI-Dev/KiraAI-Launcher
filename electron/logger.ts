@@ -25,11 +25,19 @@ export function writeLauncherLog(level: LogLevel, message: string, details?: Rec
     : ''
   const line = `[${new Date().toISOString()}] [${level}] ${singleLine(message)}${metadata ? ` ${metadata}` : ''}\n`
   const logPath = launcherLogPath()
+  const logDirectory = path.dirname(logPath)
   writeQueue = writeQueue
     .catch(() => undefined)
     .then(async () => {
-      await fs.mkdir(path.dirname(logPath), { recursive: true })
-      await fs.appendFile(logPath, line, 'utf8')
+      if (process.platform === 'win32') {
+        await fs.mkdir(logDirectory, { recursive: true })
+        await fs.appendFile(logPath, line, 'utf8')
+        return
+      }
+      await fs.mkdir(logDirectory, { recursive: true, mode: 0o700 })
+      await fs.chmod(logDirectory, 0o700)
+      await fs.appendFile(logPath, line, { encoding: 'utf8', mode: 0o600 })
+      await fs.chmod(logPath, 0o600)
     })
     .catch(() => undefined)
   return writeQueue
