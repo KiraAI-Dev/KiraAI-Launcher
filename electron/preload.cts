@@ -25,6 +25,12 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
   },
   updates: {
     check: () => ipcRenderer.invoke('updates:check'),
+    getStatus: () => ipcRenderer.invoke('updates:get-status'),
+    onStatus: (listener: (result: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, result: unknown) => listener(result)
+      ipcRenderer.on('updates:status', handler)
+      return () => ipcRenderer.removeListener('updates:status', handler)
+    },
   },
   environment: {
     check: () => ipcRenderer.invoke('environment:check'),

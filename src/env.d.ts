@@ -83,6 +83,8 @@ interface Window {
     }
     updates: {
       check: () => Promise<LauncherUpdateCheck>
+      getStatus: () => Promise<LauncherUpdateCheck | null>
+      onStatus: (listener: (result: LauncherUpdateCheck) => void) => () => void
     }
     environment: {
       check: () => Promise<EnvironmentTool[]>

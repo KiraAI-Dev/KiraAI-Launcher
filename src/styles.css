@@ -17,6 +17,7 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .n-layout-sider--collapsed .n-menu-item-content::before { left: 0; right: 0; }
 .n-layout-sider .n-menu { padding: 0 8px; }
 .sider-bottom { margin-top: auto; padding-bottom: 14px; }
+.about-update-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #d03050; }
 .page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; }
 .page-heading h1 { margin: 0 0 8px; color: var(--n-text-color); font-size: 24px; line-height: 1.25; font-weight: 600; }
 .page-heading p { margin: 0; color: var(--n-text-color-3); font-size: 14px; }

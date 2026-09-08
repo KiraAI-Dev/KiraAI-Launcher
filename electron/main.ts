@@ -47,6 +47,7 @@ let tray: Tray | null = null
 let isQuitting = false
 let closePromptInProgress = false
 let updateCheckPromise: Promise<LauncherUpdateCheck> | null = null
+let latestUpdateCheck: LauncherUpdateCheck | null = null
 let updateRestartPromptShown = false
 
 const LAUNCHER_RELEASES_API_URL = 'https://api.github.com/repos/KiraAI-Dev/KiraAI-Launcher/releases/latest'
@@ -307,21 +308,28 @@ async function checkLauncherRelease(): Promise<LauncherUpdateCheck> {
 async function checkLauncherUpdate(): Promise<LauncherUpdateCheck> {
   if (updateCheckPromise) return updateCheckPromise
   updateCheckPromise = (async () => {
-    if (!canUseAutoUpdater()) return checkLauncherRelease()
-    try {
-      const result = await autoUpdater.checkForUpdates()
-      const latestVersion = result?.updateInfo.version
-      if (typeof latestVersion !== 'string' || !latestVersion) throw new Error('INVALID_RESPONSE')
-      const currentVersion = app.getVersion()
-      return {
-        currentVersion,
-        latestVersion,
-        updateAvailable: isNewerVersion(latestVersion, currentVersion),
-        releaseUrl: '',
+    let updateCheck: LauncherUpdateCheck
+    if (!canUseAutoUpdater()) {
+      updateCheck = await checkLauncherRelease()
+    } else {
+      try {
+        const result = await autoUpdater.checkForUpdates()
+        const latestVersion = result?.updateInfo.version
+        if (typeof latestVersion !== 'string' || !latestVersion) throw new Error('INVALID_RESPONSE')
+        const currentVersion = app.getVersion()
+        updateCheck = {
+          currentVersion,
+          latestVersion,
+          updateAvailable: isNewerVersion(latestVersion, currentVersion),
+          releaseUrl: '',
+        }
+      } catch {
+        throw new Error('LAUNCHER_UPDATE_CHECK_FAILED')
       }
-    } catch {
-      throw new Error('LAUNCHER_UPDATE_CHECK_FAILED')
     }
+    latestUpdateCheck = updateCheck
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updates:status', updateCheck)
+    return updateCheck
   })()
   try {
     return await updateCheckPromise
@@ -871,6 +879,7 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('overview:load', loadOverview)
   ipcMain.handle('updates:check', checkLauncherUpdate)
+  ipcMain.handle('updates:get-status', () => latestUpdateCheck)
   ipcMain.handle('environment:check', checkEnvironment)
   ipcMain.handle('environment:install', async (_event, value: unknown) => {
     try {

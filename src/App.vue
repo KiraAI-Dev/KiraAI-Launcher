@@ -49,6 +49,7 @@ const projectsRefreshing = ref(false)
 const updateChecking = ref(false)
 const updateCheckResult = ref<LauncherUpdateCheck | null>(null)
 const updateCheckError = ref('')
+const updateAvailable = ref(false)
 const messageHost = ref<{ success: (content: string) => unknown } | null>(null)
 const dialogHost = ref<ReturnType<typeof useDialog> | null>(null)
 const MessageHost = defineComponent({
@@ -106,7 +107,12 @@ const menuOptions = computed<MenuOption[]>(() => [
 ])
 const settingsMenu = computed<MenuOption[]>(() => [
   { label: t.value.settings, key: 'settings', icon: () => h(SettingsOutline) },
-  { label: aboutText.value.menu, key: 'about', icon: () => h(InformationCircleOutline) },
+  {
+    label: aboutText.value.menu,
+    key: 'about',
+    icon: () => h(InformationCircleOutline),
+    ...(updateAvailable.value ? { extra: () => h('span', { class: 'about-update-dot', 'aria-hidden': 'true' }) } : {}),
+  },
 ])
 const languageOptions = computed(() => [{ label: t.value.chinese, value: 'zh-CN' }, { label: t.value.english, value: 'en-US' }])
 const themeOptions = computed(() => [{ label: t.value.system, value: 'system' }, { label: t.value.light, value: 'light' }, { label: t.value.dark, value: 'dark' }])
@@ -209,6 +215,7 @@ async function checkForUpdates() {
   updateCheckResult.value = null
   try {
     updateCheckResult.value = await requireLauncherBridge().updates.check()
+    updateAvailable.value = updateCheckResult.value.updateAvailable
   } catch {
     updateCheckError.value = aboutText.value.failed
   } finally {
@@ -563,10 +570,18 @@ watch(activeView, (view) => {
 })
 
 let runtimeTimer: number | undefined
+let removeUpdateStatusListener: (() => void) | undefined
 
 onMounted(() => {
   systemThemeQuery.addEventListener('change', syncSystemTheme)
   runtimeTimer = window.setInterval(() => { runtimeNow.value = Date.now() }, 1000)
+  const updates = window.kiraLauncher?.updates
+  removeUpdateStatusListener = updates?.onStatus((result) => {
+    updateAvailable.value = result.updateAvailable
+  })
+  void updates?.getStatus().then((result) => {
+    if (result) updateAvailable.value = result.updateAvailable
+  })
   void restoreSettings()
   void refreshManagedProjects()
   void refreshEnvironment()
@@ -574,6 +589,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   systemThemeQuery.removeEventListener('change', syncSystemTheme)
   if (runtimeTimer) window.clearInterval(runtimeTimer)
+  removeUpdateStatusListener?.()
 })
 </script>
 
