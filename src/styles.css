@@ -29,6 +29,11 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .placeholder { min-height: calc(100vh - 180px); display: grid; place-items: center; }
 .settings-page { max-width: 980px; }
 .environment-page { max-width: 980px; }
+.logs-page { max-width: 1100px; }
+.log-output, .log-empty { height: calc(100vh - 265px); min-height: 260px; max-height: 620px; border: 1px solid #e0e0e6; border-radius: 8px; background: #fafafc; }
+.log-empty { display: grid; place-items: center; }
+.log-output { margin: 0; padding: 16px; overflow: auto; color: var(--n-text-color-2); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
+.dark-app .log-output, .dark-app .log-empty { border-color: rgba(255, 255, 255, .09); background: #18181c; }
 .about-page { min-height: calc(100vh - 180px); display: grid; place-items: center; }
 .about-card { width: min(440px, 100%); padding: 26px 14px; text-align: center; }
 .about-icon { width: 92px; height: 92px; border-radius: 20px; box-shadow: 0 10px 26px rgba(32, 128, 240, .24); }

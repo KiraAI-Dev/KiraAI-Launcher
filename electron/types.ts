@@ -62,6 +62,10 @@ export type LauncherUpdateCheck = {
   releaseUrl: string
 }
 
+export type LauncherLog = {
+  content: string
+}
+
 export type LauncherSettings = {
   themeMode: ThemeMode
   themeColor: ThemeColor
