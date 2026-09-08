@@ -51,6 +51,7 @@ interface LauncherUpdateCheck {
   latestVersion: string
   updateAvailable: boolean
   releaseUrl: string
+  releaseNotes: string
 }
 
 interface LauncherLog {
@@ -85,6 +86,7 @@ interface Window {
       check: () => Promise<LauncherUpdateCheck>
       getStatus: () => Promise<LauncherUpdateCheck | null>
       onStatus: (listener: (result: LauncherUpdateCheck) => void) => () => void
+      install: () => Promise<void>
     }
     environment: {
       check: () => Promise<EnvironmentTool[]>

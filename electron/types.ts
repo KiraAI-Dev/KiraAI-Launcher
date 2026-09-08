@@ -60,6 +60,7 @@ export type LauncherUpdateCheck = {
   latestVersion: string
   updateAvailable: boolean
   releaseUrl: string
+  releaseNotes: string
 }
 
 export type LauncherLog = {

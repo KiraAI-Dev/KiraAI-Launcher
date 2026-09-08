@@ -47,6 +47,7 @@ const projectSettingsEnvironmentVariables = ref('')
 const projectSettingsSaving = ref(false)
 const projectsRefreshing = ref(false)
 const updateChecking = ref(false)
+const updateInstalling = ref(false)
 const updateCheckResult = ref<LauncherUpdateCheck | null>(null)
 const updateCheckError = ref('')
 const updateAvailable = ref(false)
@@ -220,6 +221,18 @@ async function checkForUpdates() {
     updateCheckError.value = aboutText.value.failed
   } finally {
     updateChecking.value = false
+  }
+}
+
+async function installUpdate() {
+  updateInstalling.value = true
+  updateCheckError.value = ''
+  try {
+    await requireLauncherBridge().updates.install()
+  } catch {
+    updateCheckError.value = aboutText.value.updateFailed
+  } finally {
+    updateInstalling.value = false
   }
 }
 
@@ -578,9 +591,12 @@ onMounted(() => {
   const updates = window.kiraLauncher?.updates
   removeUpdateStatusListener = updates?.onStatus((result) => {
     updateAvailable.value = result.updateAvailable
+    if (result.updateAvailable) updateCheckResult.value = result
   })
   void updates?.getStatus().then((result) => {
-    if (result) updateAvailable.value = result.updateAvailable
+    if (!result) return
+    updateAvailable.value = result.updateAvailable
+    if (result.updateAvailable) updateCheckResult.value = result
   })
   void restoreSettings()
   void refreshManagedProjects()
@@ -627,7 +643,7 @@ onBeforeUnmount(() => {
             <section><h2 class="settings-section-title">{{ t.appearance }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="isDark ? MoonOutline : SunnyOutline" size="22" /><div><h3>{{ t.theme }}</h3><p>{{ t.themeSub }}</p></div></div><n-select v-model:value="themeMode" :options="themeOptions" style="width: 190px" /></div><n-text depth="3" class="setting-hint">{{ t.themeHint }}</n-text></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><span class="palette-dot" :style="{ backgroundColor: activePalette.primary }"></span><div><h3>{{ t.themeColor }}</h3><p>{{ t.themeColorSub }}</p></div></div><n-select v-model:value="themeColor" :options="colorOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="LanguageOutline" size="22" /><div><h3>{{ t.language }}</h3><p>{{ t.languageSub }}</p></div></div><n-select v-model:value="language" :options="languageOptions" style="width: 190px" /></div><n-text depth="3" class="setting-hint">{{ t.languageHint }}</n-text></n-card></n-space></section>
             <section><h2 class="settings-section-title">{{ t.behavior }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.webuiOpenMode }}</h3><p>{{ t.webuiOpenModeSub }}</p></div></div><n-select v-model:value="webuiOpenMode" :options="webuiOpenModeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeWhen }}</h3><p>{{ t.closeWhenSub }}</p></div></div><n-select v-model:value="closeAction" :options="closeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeReminder }}</h3><p>{{ t.closeReminderSub }}</p></div></div><n-switch v-model:value="closeReminder" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoUpdate }}</h3><p>{{ t.autoUpdateSub }}</p></div></div><n-switch v-model:value="autoUpdate" /></div></n-card></n-space></section>
           </n-space></template>
-          <template v-else-if="activeView === 'about'"><div class="about-page"><n-card class="about-card" :bordered="false"><n-space vertical align="center" :size="18"><img src="/icon.png" class="about-icon" alt="KiraAI Launcher" /><div class="about-copy"><h1>{{ aboutText.title }}</h1><p>{{ aboutText.version }} {{ launcherVersion }}</p></div><n-button type="primary" :loading="updateChecking" @click="checkForUpdates"><template #icon><n-icon :component="RefreshOutline" /></template>{{ updateChecking ? aboutText.checking : aboutText.check }}</n-button><n-alert v-if="updateCheckResult" :type="updateCheckResult.updateAvailable ? 'info' : 'success'" :show-icon="false" class="about-update-result">{{ updateCheckResult.updateAvailable ? aboutText.available.replace('{version}', updateCheckResult.latestVersion) : aboutText.latest.replace('{version}', updateCheckResult.latestVersion) }}</n-alert><n-alert v-else-if="updateCheckError" type="error" :show-icon="false" class="about-update-result">{{ updateCheckError }}</n-alert></n-space></n-card></div></template>
+          <template v-else-if="activeView === 'about'"><div class="about-page"><n-card class="about-card" :bordered="false"><n-space vertical align="center" :size="18"><img src="/icon.png" class="about-icon" alt="KiraAI Launcher" /><div class="about-copy"><h1>{{ aboutText.title }}</h1><p>{{ aboutText.version }} {{ launcherVersion }}</p></div><n-button type="primary" :loading="updateChecking || updateInstalling" @click="updateAvailable ? installUpdate() : checkForUpdates()"><template #icon><n-icon :component="updateAvailable ? DownloadOutline : RefreshOutline" /></template>{{ updateInstalling ? aboutText.updating : updateChecking ? aboutText.checking : updateAvailable ? aboutText.updateNow : aboutText.check }}</n-button><div v-if="updateCheckResult?.updateAvailable" class="about-release-notes"><div class="about-release-heading"><strong>{{ aboutText.releaseNotes }}</strong><n-tag type="info" size="small" :bordered="false">{{ updateCheckResult.latestVersion }}</n-tag></div><div class="about-release-body">{{ updateCheckResult.releaseNotes || aboutText.noReleaseNotes }}</div></div><n-alert v-if="updateCheckResult && !updateCheckResult.updateAvailable" type="success" :show-icon="false" class="about-update-result">{{ aboutText.latest.replace('{version}', updateCheckResult.latestVersion) }}</n-alert><n-alert v-if="updateCheckError" type="error" :show-icon="false" class="about-update-result">{{ updateCheckError }}</n-alert></n-space></n-card></div></template>
           <template v-else><div class="placeholder"><n-empty :description="`${viewTitle} ${t.moduleComing}`" size="large"><template #icon><n-icon :component="RocketOutline" /></template><n-button type="primary" @click="activeView = 'overview'">{{ t.backOverview }}</n-button></n-empty></div></template>
         </n-layout-content>
       </n-layout>
