@@ -50,6 +50,7 @@ interface LauncherUpdateCheck {
   currentVersion: string
   latestVersion: string
   updateAvailable: boolean
+  downloaded: boolean
   releaseUrl: string
   releaseNotes: string
 }

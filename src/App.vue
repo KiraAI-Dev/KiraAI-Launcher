@@ -51,6 +51,7 @@ const updateInstalling = ref(false)
 const updateCheckResult = ref<LauncherUpdateCheck | null>(null)
 const updateCheckError = ref('')
 const updateAvailable = ref(false)
+let updateRestartPromptShown = false
 const messageHost = ref<{ success: (content: string) => unknown } | null>(null)
 const dialogHost = ref<ReturnType<typeof useDialog> | null>(null)
 const MessageHost = defineComponent({
@@ -234,6 +235,19 @@ async function installUpdate() {
   } finally {
     updateInstalling.value = false
   }
+}
+
+function showUpdateRestartPrompt(result: LauncherUpdateCheck) {
+  const host = dialogHost.value
+  if (!result.downloaded || updateInstalling.value || updateRestartPromptShown || !host) return
+  updateRestartPromptShown = true
+  host.info({
+    title: aboutText.value.updateReadyTitle,
+    content: aboutText.value.updateReadyMessage,
+    positiveText: aboutText.value.restartNow,
+    negativeText: aboutText.value.later,
+    onPositiveClick: () => { void installUpdate() },
+  })
 }
 
 function upsertManagedProject(project: ManagedProject) {
@@ -592,11 +606,13 @@ onMounted(() => {
   removeUpdateStatusListener = updates?.onStatus((result) => {
     updateAvailable.value = result.updateAvailable
     if (result.updateAvailable) updateCheckResult.value = result
+    showUpdateRestartPrompt(result)
   })
   void updates?.getStatus().then((result) => {
     if (!result) return
     updateAvailable.value = result.updateAvailable
     if (result.updateAvailable) updateCheckResult.value = result
+    showUpdateRestartPrompt(result)
   })
   void restoreSettings()
   void refreshManagedProjects()

@@ -51,8 +51,6 @@ let updateCheckPromise: Promise<LauncherUpdateCheck> | null = null
 let latestUpdateCheck: LauncherUpdateCheck | null = null
 let latestUpdateDownloadPromise: Promise<string[]> | null = null
 let updateDownloaded = false
-let updateInstallRequested = false
-let updateRestartPromptShown = false
 
 const LAUNCHER_RELEASES_API_URL = 'https://api.github.com/repos/KiraAI-Dev/KiraAI-Launcher/releases/latest'
 const LAUNCHER_RELEASES_URL = 'https://github.com/KiraAI-Dev/KiraAI-Launcher/releases/latest'
@@ -178,22 +176,6 @@ function createTray() {
   tray.on('click', showMainWindow)
 }
 
-function updaterText() {
-  return currentSettings.language === 'zh-CN'
-    ? {
-        title: '更新已就绪',
-        message: 'KiraAI Launcher 的新版本已下载完成，重启后即可安装。',
-        restart: '立即重启',
-        later: '稍后',
-      }
-    : {
-        title: 'Update ready',
-        message: 'A new version of KiraAI Launcher has been downloaded and will be installed after restart.',
-        restart: 'Restart now',
-        later: 'Later',
-      }
-}
-
 function configureAutoUpdater() {
   if (!canUseAutoUpdater()) return
   // Windows update metadata has no architecture suffix. Keep ARM64 on a dedicated channel
@@ -206,21 +188,9 @@ function configureAutoUpdater() {
   })
   autoUpdater.on('update-downloaded', () => {
     updateDownloaded = true
-    if (updateInstallRequested || updateRestartPromptShown) return
-    updateRestartPromptShown = true
-    const text = updaterText()
-    void dialog.showMessageBox({
-      type: 'info',
-      title: text.title,
-      message: text.message,
-      buttons: [text.restart, text.later],
-      defaultId: 0,
-      cancelId: 1,
-    }).then(({ response }) => {
-      if (response !== 0) return
-      isQuitting = true
-      autoUpdater.quitAndInstall()
-    })
+    if (!latestUpdateCheck?.updateAvailable) return
+    latestUpdateCheck = { ...latestUpdateCheck, downloaded: true }
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updates:status', latestUpdateCheck)
   })
 }
 
@@ -321,6 +291,7 @@ async function checkLauncherRelease(): Promise<LauncherUpdateCheck> {
     currentVersion,
     latestVersion: release.tag_name,
     updateAvailable: isNewerVersion(release.tag_name, currentVersion),
+    downloaded: false,
     releaseUrl: release.html_url,
     releaseNotes: typeof release.body === 'string' ? release.body.trim() : '',
   }
@@ -345,6 +316,7 @@ async function checkLauncherUpdate(): Promise<LauncherUpdateCheck> {
           currentVersion,
           latestVersion,
           updateAvailable,
+          downloaded: updateAvailable && updateDownloaded,
           releaseUrl: release?.releaseUrl ?? LAUNCHER_RELEASES_URL,
           releaseNotes: release?.releaseNotes || normalizeReleaseNotes(result?.updateInfo.releaseNotes),
         }
@@ -369,7 +341,6 @@ async function installLauncherUpdate(): Promise<void> {
     await shell.openExternal(latestUpdateCheck.releaseUrl || LAUNCHER_RELEASES_URL)
     return
   }
-  updateInstallRequested = true
   try {
     if (!updateDownloaded) {
       if (latestUpdateDownloadPromise) await latestUpdateDownloadPromise
@@ -378,7 +349,6 @@ async function installLauncherUpdate(): Promise<void> {
     isQuitting = true
     autoUpdater.quitAndInstall()
   } catch {
-    updateInstallRequested = false
     throw new Error('LAUNCHER_UPDATE_INSTALL_FAILED')
   }
 }
