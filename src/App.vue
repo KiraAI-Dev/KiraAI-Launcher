@@ -3,9 +3,9 @@ import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } 
 import { darkTheme, enUS, NButton, NDialogProvider, NIcon, NMessageProvider, NTag, useDialog, useMessage, zhCN } from 'naive-ui'
 import type { DataTableColumns, MenuOption } from 'naive-ui'
 import { messages, projectAdvancedSettingsMessages, type Language } from './i18n/messages'
-import { AddOutline, CloudOutline, CloudUploadOutline, CodeSlashOutline, CubeOutline, DownloadOutline, FolderOpenOutline, HardwareChipOutline, HomeOutline, InformationCircleOutline, LanguageOutline, LayersOutline, MoonOutline, OpenOutline, PlayOutline, RefreshOutline, RocketOutline, SettingsOutline, StopOutline, SunnyOutline, TrashOutline } from '@vicons/ionicons5'
+import { AddOutline, CloudOutline, CloudUploadOutline, CodeSlashOutline, CubeOutline, DocumentTextOutline, DownloadOutline, FolderOpenOutline, HardwareChipOutline, HomeOutline, InformationCircleOutline, LanguageOutline, LayersOutline, MoonOutline, OpenOutline, PlayOutline, RefreshOutline, RocketOutline, SettingsOutline, StopOutline, SunnyOutline, TrashOutline } from '@vicons/ionicons5'
 
-type ViewKey = 'overview' | 'projects' | 'deployments' | 'environment' | 'settings' | 'about'
+type ViewKey = 'overview' | 'projects' | 'deployments' | 'environment' | 'logs' | 'settings' | 'about'
 type ProjectCreationMode = 'local' | 'download' | 'cloud' | null
 
 const activeView = ref<ViewKey>('overview')
@@ -21,6 +21,9 @@ const startedProjectIds = ref<string[]>([])
 const runtimeNow = ref(Date.now())
 const launcherVersion = ref('—')
 const environmentTools = ref<EnvironmentTool[]>([])
+const launcherLog = ref<LauncherLog>({ path: '', content: '' })
+const logsLoading = ref(false)
+const logsError = ref('')
 const showNewProjectModal = ref(false)
 const projectCreationMode = ref<ProjectCreationMode>(null)
 const selectedLocalProject = ref<LocalProjectCandidate | null>(null)
@@ -99,6 +102,7 @@ const menuOptions = computed<MenuOption[]>(() => [
   { label: t.value.projects, key: 'projects', icon: () => h(LayersOutline) },
   { label: t.value.deployments, key: 'deployments', icon: () => h(RocketOutline) },
   { label: t.value.environment, key: 'environment', icon: () => h(HardwareChipOutline) },
+  { label: t.value.logs, key: 'logs', icon: () => h(DocumentTextOutline) },
 ])
 const settingsMenu = computed<MenuOption[]>(() => [
   { label: t.value.settings, key: 'settings', icon: () => h(SettingsOutline) },
@@ -110,7 +114,7 @@ const colorOptions = computed(() => (Object.keys(palettes) as Array<keyof typeof
 const closeOptions = computed(() => [{ label: t.value.minimize, value: 'minimize' }, { label: t.value.quit, value: 'quit' }])
 const webuiOpenModeOptions = computed(() => [{ label: t.value.launcherPage, value: 'launcher' }, { label: t.value.systemBrowser, value: 'browser' }])
 const projectTableText = computed(() => t.value.projectTable)
-const viewTitle = computed(() => ({ overview: t.value.overview, projects: t.value.projects, deployments: t.value.deployments, environment: t.value.environment, settings: t.value.settings, about: aboutText.value.menu })[activeView.value])
+const viewTitle = computed(() => ({ overview: t.value.overview, projects: t.value.projects, deployments: t.value.deployments, environment: t.value.environment, logs: t.value.logs, settings: t.value.settings, about: aboutText.value.menu })[activeView.value])
 const cloudProjectCount = computed(() => managedProjects.value.filter((project) => project.type === 'cloud').length)
 const activeDeploymentCount = computed(() => cloudProjectCount.value + startedProjectIds.value.length)
 const recentProjects = computed(() => [...managedProjects.value].sort((left, right) => Date.parse(right.createdAt) - Date.parse(left.createdAt)).slice(0, 5))
@@ -234,6 +238,18 @@ async function refreshEnvironment() {
     environmentError.value = getErrorMessage(error)
   } finally {
     environmentChecking.value = false
+  }
+}
+
+async function refreshLauncherLog() {
+  logsLoading.value = true
+  logsError.value = ''
+  try {
+    launcherLog.value = await requireLauncherBridge().logs.read()
+  } catch (error) {
+    logsError.value = error instanceof Error && error.message === 'LOG_READ_FAILED' ? t.value.logsReadFailed : getErrorMessage(error)
+  } finally {
+    logsLoading.value = false
   }
 }
 
@@ -542,6 +558,10 @@ watch([themeMode, themeColor, language, webuiOpenMode, closeAction, closeReminde
   })
 })
 
+watch(activeView, (view) => {
+  if (view === 'logs') void refreshLauncherLog()
+})
+
 let runtimeTimer: number | undefined
 
 onMounted(() => {
@@ -586,6 +606,7 @@ onBeforeUnmount(() => {
           </n-space></template>
           <template v-else-if="activeView === 'projects'"><n-space vertical :size="24"><div class="page-heading"><div><h1>{{ t.projects }}</h1><p>{{ t.manageProjects }}</p></div><n-space><n-button :loading="projectsRefreshing" @click="refreshProjectRuntime"><template #icon><n-icon :component="RefreshOutline" /></template>{{ t.refresh }}</n-button><n-button type="primary" @click="openNewProjectModal"><template #icon><n-icon :component="AddOutline" /></template>{{ t.newProject }}</n-button></n-space></div><n-alert v-if="projectError" type="error" :title="t.operationFailed" closable @close="projectError = ''">{{ projectError }}</n-alert><n-card><n-empty v-if="!managedProjects.length" :description="t.noManagedProjects"><template #extra><n-text depth="3">{{ t.noManagedProjectsSub }}</n-text></template><n-button type="primary" @click="openNewProjectModal">{{ t.newProject }}</n-button></n-empty><n-data-table v-else :columns="managedProjectColumns" :data="managedProjects" :bordered="false" :single-line="false" :scroll-x="1000" /></n-card></n-space></template>
           <template v-else-if="activeView === 'environment'"><n-space vertical :size="24" class="environment-page"><div class="page-heading"><div><h1>{{ t.environment }}</h1><p>{{ t.environmentSub }}</p></div><n-button :loading="environmentChecking" :disabled="environmentInstalling !== null" @click="refreshEnvironment">{{ environmentChecking ? t.checking : t.refresh }}</n-button></div><n-alert v-if="environmentError" type="error" :title="t.operationFailed" closable @close="environmentError = ''">{{ environmentError }}</n-alert><n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen" item-responsive><n-grid-item v-for="tool in environmentTools" :key="tool.name" span="3 m:1"><n-card size="small" class="environment-card"><n-space vertical :size="16"><n-space justify="space-between" align="center"><n-space align="center"><n-icon :component="tool.name === 'Python' ? CodeSlashOutline : tool.name === 'uv' ? CubeOutline : HardwareChipOutline" :color="activePalette.primary" size="24" /><strong>{{ tool.name }}</strong></n-space><n-tag :type="tool.installed ? 'success' : 'error'" size="small" :bordered="false">{{ tool.installed ? t.installed : t.notInstalled }}</n-tag></n-space><n-text depth="3">{{ tool.version || '—' }}</n-text><div class="environment-path"><span>{{ t.environmentPath }}</span><code>{{ tool.path || '—' }}</code></div><div class="environment-actions"><n-select v-model:value="environmentSelectedVersions[tool.name]" :options="environmentVersionOptions(tool)" :disabled="tool.installed || environmentChecking || environmentInstalling !== null" size="small" /><n-button type="primary" size="small" :loading="isEnvironmentInstalling(tool)" :disabled="tool.installed || environmentChecking || environmentInstalling !== null" @click="installEnvironmentTool(tool)">{{ tool.installed ? t.installed : environmentActionsText.install }}</n-button></div></n-space></n-card></n-grid-item></n-grid></n-space></template>
+          <template v-else-if="activeView === 'logs'"><n-space vertical :size="24" class="logs-page"><div class="page-heading"><div><h1>{{ t.logs }}</h1><p>{{ t.logsSub }}</p></div><n-button :loading="logsLoading" @click="refreshLauncherLog"><template #icon><n-icon :component="RefreshOutline" /></template>{{ t.refreshLogs }}</n-button></div><n-alert v-if="logsError" type="error" :title="t.operationFailed" closable @close="logsError = ''">{{ logsError }}</n-alert><n-card class="logs-card" size="small"><div class="log-file-path"><span>{{ t.logFile }}</span><code>{{ launcherLog.path || '—' }}</code></div><n-empty v-if="!launcherLog.content" :description="t.noLogs" size="small" /><pre v-else class="log-output">{{ launcherLog.content }}</pre></n-card></n-space></template>
           <template v-else-if="activeView === 'settings'"><n-space vertical :size="30" class="settings-page"><div class="page-heading"><div><h1>{{ t.settings }}</h1><p>{{ t.settingsSub }}</p></div></div>
             <section><h2 class="settings-section-title">{{ t.appearance }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="isDark ? MoonOutline : SunnyOutline" size="22" /><div><h3>{{ t.theme }}</h3><p>{{ t.themeSub }}</p></div></div><n-select v-model:value="themeMode" :options="themeOptions" style="width: 190px" /></div><n-text depth="3" class="setting-hint">{{ t.themeHint }}</n-text></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><span class="palette-dot" :style="{ backgroundColor: activePalette.primary }"></span><div><h3>{{ t.themeColor }}</h3><p>{{ t.themeColorSub }}</p></div></div><n-select v-model:value="themeColor" :options="colorOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="LanguageOutline" size="22" /><div><h3>{{ t.language }}</h3><p>{{ t.languageSub }}</p></div></div><n-select v-model:value="language" :options="languageOptions" style="width: 190px" /></div><n-text depth="3" class="setting-hint">{{ t.languageHint }}</n-text></n-card></n-space></section>
             <section><h2 class="settings-section-title">{{ t.behavior }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.webuiOpenMode }}</h3><p>{{ t.webuiOpenModeSub }}</p></div></div><n-select v-model:value="webuiOpenMode" :options="webuiOpenModeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeWhen }}</h3><p>{{ t.closeWhenSub }}</p></div></div><n-select v-model:value="closeAction" :options="closeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeReminder }}</h3><p>{{ t.closeReminderSub }}</p></div></div><n-switch v-model:value="closeReminder" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoUpdate }}</h3><p>{{ t.autoUpdateSub }}</p></div></div><n-switch v-model:value="autoUpdate" /></div></n-card></n-space></section>

@@ -9,6 +9,7 @@ import type { AppUpdater } from 'electron-updater'
 import { decryptAccessToken, encryptAccessToken, getInstanceRuntimeDuration, getInstanceVersion, getLocalAccessToken, getWebuiSessionToken, readJson, requestWithTimeout, verifyCloudProject } from './cloud.js'
 import { checkEnvironment, installEnvironmentTool } from './environment.js'
 import { getLocalProject, getLocalWebuiUrl, normalizeLocalWebuiHost, saveLocalWebuiSettings } from './local-project.js'
+import { initializeLauncherLog, readLauncherLog, writeLauncherLog } from './logger.js'
 import { downloadAndRegisterProject as downloadProject } from './project-download.js'
 import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
 import { defaultSettings, loadSettings, saveSettings } from './settings.js'
@@ -342,6 +343,7 @@ async function startLocalProject(id: string): Promise<void> {
   if (launchedProjects.has(id)) return
   const project = (await loadProjects()).find((item) => item.id === id)
   if (!project || project.type !== 'local' || !project.projectPath) throw new Error('LOCAL_PROJECT_NOT_FOUND')
+  void writeLauncherLog('INFO', 'Preparing local project', { project: project.name })
   const localProject = await getLocalProject(project.projectPath)
   const localTarget = getLocalWebuiUrl(localProject.host, localProject.port ?? 5267)
   await ensureLocalPortAvailable(localProject.port ?? 5267, localProject.host)
@@ -386,10 +388,17 @@ async function startLocalProject(id: string): Promise<void> {
     stdio: 'ignore',
   })
   launchedProjects.set(id, child)
-  child.once('exit', () => launchedProjects.delete(id))
-  child.once('error', () => launchedProjects.delete(id))
+  child.once('exit', (code, signal) => {
+    launchedProjects.delete(id)
+    void writeLauncherLog(code === 0 ? 'INFO' : 'WARN', 'Local project process exited', { project: project.name, code, signal })
+  })
+  child.once('error', () => {
+    launchedProjects.delete(id)
+    void writeLauncherLog('ERROR', 'Local project process failed', { project: project.name })
+  })
   await waitForSpawn(child)
   await waitForLocalWebui(localTarget, child)
+  void writeLauncherLog('INFO', 'Local project started', { project: project.name })
 }
 
 function ensureLocalPortAvailable(port: number, host: string | undefined): Promise<void> {
@@ -772,6 +781,7 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  await initializeLauncherLog()
   currentSettings = await loadSettings()
   configureAutoUpdater()
   ipcMain.handle('settings:load', async () => {
@@ -834,9 +844,14 @@ app.whenReady().then(async () => {
     if (!accessToken) throw new Error('CLOUD_TOKEN_DECRYPT_FAILED')
     return accessToken
   })
-  ipcMain.handle('projects:start', (_event, id: unknown) => {
+  ipcMain.handle('projects:start', async (_event, id: unknown) => {
     if (typeof id !== 'string') throw new Error('PROJECT_ID_INVALID')
-    return startLocalProject(id)
+    try {
+      return await startLocalProject(id)
+    } catch (error) {
+      void writeLauncherLog('ERROR', 'Failed to start local project', { reason: error instanceof Error ? error.message : 'UNKNOWN' })
+      throw error
+    }
   })
   ipcMain.handle('projects:stop', (_event, id: unknown) => {
     if (typeof id !== 'string') throw new Error('PROJECT_ID_INVALID')
@@ -857,7 +872,17 @@ app.whenReady().then(async () => {
   ipcMain.handle('overview:load', loadOverview)
   ipcMain.handle('updates:check', checkLauncherUpdate)
   ipcMain.handle('environment:check', checkEnvironment)
-  ipcMain.handle('environment:install', (_event, value: unknown) => installEnvironmentTool(value))
+  ipcMain.handle('environment:install', async (_event, value: unknown) => {
+    try {
+      const tool = await installEnvironmentTool(value)
+      void writeLauncherLog('INFO', 'Environment tool installed', { tool: tool.name, version: tool.version })
+      return tool
+    } catch (error) {
+      void writeLauncherLog('ERROR', 'Failed to install environment tool', { reason: error instanceof Error ? error.message : 'UNKNOWN' })
+      throw error
+    }
+  })
+  ipcMain.handle('logs:read', readLauncherLog)
   createTray()
   createWindow()
   if (currentSettings.autoUpdate && canUseAutoUpdater()) void checkLauncherUpdate().catch(() => undefined)

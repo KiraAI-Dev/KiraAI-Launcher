@@ -53,6 +53,11 @@ interface LauncherUpdateCheck {
   releaseUrl: string
 }
 
+interface LauncherLog {
+  path: string
+  content: string
+}
+
 interface Window {
   kiraLauncher?: {
     settings: {
@@ -83,6 +88,9 @@ interface Window {
     environment: {
       check: () => Promise<EnvironmentTool[]>
       install: (value: { name: EnvironmentTool['name']; version: string }) => Promise<EnvironmentTool>
+    }
+    logs: {
+      read: () => Promise<LauncherLog>
     }
   }
 }
