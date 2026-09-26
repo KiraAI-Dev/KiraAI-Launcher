@@ -248,10 +248,10 @@ function releaseLookupFixture(apiResponse, pageUrl = 'https://github.com/xxynet/
       requests.push(options.url)
       return request
     } },
-    fetchWithTimeout: async (url) => {
+    fetchWithTimeout: async (url, _timeout, _init, readResponse) => {
       requests.push(url)
       if (apiResponse instanceof Error) throw apiResponse
-      return apiResponse
+      return readResponse(apiResponse)
     },
   }, ['getLatestReleaseArchiveUrl', 'getReleasePageArchiveUrl', 'downloadError'])
   return { run: getLatestReleaseArchiveUrl, requests, aborted: () => aborted }
@@ -369,10 +369,10 @@ test('invalid release selections fail before filesystem or network work', async 
 function releaseListFixture(response) {
   const requests = []
   const { listProjectReleases } = loadSource('electron/project-download.ts', {}, {
-    fetchWithTimeout: async (url) => {
+    fetchWithTimeout: async (url, _timeout, _init, readResponse) => {
       requests.push(url)
       if (response instanceof Error) throw response
-      return response
+      return readResponse(response)
     },
   }, ['listProjectReleases', 'downloadError'])
   return { run: listProjectReleases, requests }
@@ -486,4 +486,106 @@ test('renderer passes the selected release or the latest default into the downlo
   assert.equal(requests[0].name, 'instance')
   assert.equal(requests[1].releaseTag, undefined)
   assert.equal(actionInProgress.value, false)
+})
+
+function releaseBodyTimeoutFixture(mode = 'stalled-body') {
+  const timers = new Map(), requests = []
+  let timerId = 0, bodyController, bodyStarted, fallbackCalls = 0
+  const readingBody = new Promise((resolve) => { bodyStarted = resolve })
+  const functions = loadSource('electron/project-download.ts', {}, {
+    KIRAAI_RELEASES_API_URL: 'https://api.github.com/repos/KiraAI-Dev/KiraAI/releases/latest',
+    net: { fetch: async (url, { signal }) => {
+      requests.push({ url, signal })
+      if (mode === 'network-error') throw new Error('network')
+      if (mode === 'stalled-headers') return new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true })
+      })
+      if (mode === 'success') return Response.json([{ tag_name: 'v2', prerelease: false }])
+      const body = new ReadableStream({ start(controller) {
+        bodyController = controller
+        signal.addEventListener('abort', () => controller.error(new Error('aborted')), { once: true })
+      } })
+      const response = new Response(body)
+      response.json = () => {
+        bodyStarted()
+        return Response.prototype.json.call(response)
+      }
+      return response
+    } },
+    setTimeout: (callback, milliseconds) => {
+      assert.equal(milliseconds, 15000)
+      timers.set(++timerId, callback)
+      return timerId
+    },
+    clearTimeout: (id) => timers.delete(id),
+    getReleasePageArchiveUrl: async () => { fallbackCalls++; return 'https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/v2.zip' },
+  }, ['fetchWithTimeout', 'listProjectReleases', 'getLatestReleaseArchiveUrl', 'downloadError'])
+  return {
+    ...functions, requests, timers, readingBody,
+    expire: () => {
+      assert.equal(timers.size, 1, 'deadline must remain active while the request is pending')
+      Array.from(timers.values())[0]()
+    },
+    completeBody: (text) => { bodyController.enqueue(Buffer.from(text)); bodyController.close() },
+    succeedNext: () => { mode = 'success' },
+    fallbackCalls: () => fallbackCalls,
+  }
+}
+
+test('stalled release-list body times out, clears renderer loading, and allows retry', async () => {
+  const network = releaseBodyTimeoutFixture()
+  const renderer = rendererReleasesFixture(network.listProjectReleases)
+  const pending = renderer.loadProjectReleases()
+  await network.readingBody
+  assert.equal(renderer.releasesLoading.value, true)
+  assert.equal(network.requests[0].signal.aborted, false)
+  network.expire()
+  await pending
+  assert.equal(network.requests[0].signal.aborted, true)
+  assert.equal(network.timers.size, 0)
+  assert.equal(renderer.releasesLoading.value, false)
+  assert.equal(renderer.releasesError.value, 'RELEASE_LIST_FAILED')
+  assert.equal(renderer.releasesLoaded.value, false)
+  network.succeedNext()
+  await renderer.loadProjectReleases()
+  assert.equal(renderer.releasesLoaded.value, true)
+  assert.equal(renderer.releasesError.value, '')
+  assert.equal(renderer.projectReleases.value[0].tag, 'v2')
+  assert.equal(network.timers.size, 0)
+  assert.equal(network.requests.length, 2)
+})
+
+test('stalled latest-release body times out and uses the existing fallback', async () => {
+  const fixture = releaseBodyTimeoutFixture()
+  const pending = fixture.getLatestReleaseArchiveUrl()
+  await fixture.readingBody
+  fixture.expire()
+  assert.equal(await pending, 'https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/v2.zip')
+  assert.equal(fixture.fallbackCalls(), 1)
+  assert.equal(fixture.requests[0].signal.aborted, true)
+  assert.equal(fixture.timers.size, 0)
+})
+
+test('release body deadline clears after successful parsing and malformed JSON', async () => {
+  for (const valid of [true, false]) {
+    const fixture = releaseBodyTimeoutFixture()
+    const pending = fixture.listProjectReleases()
+    await fixture.readingBody
+    assert.equal(fixture.timers.size, 1)
+    fixture.completeBody(valid ? '[{"tag_name":"v2"}]' : 'invalid JSON')
+    if (valid) assert.equal((await pending)[0].tag, 'v2')
+    else await assert.rejects(pending, /RELEASE_LIST_FAILED/)
+    assert.equal(fixture.timers.size, 0)
+    assert.equal(fixture.requests[0].signal.aborted, false)
+  }
+})
+
+test('release deadline still covers stalled headers and clears after connection errors', async () => {
+  for (const mode of ['stalled-headers', 'network-error']) {
+    const fixture = releaseBodyTimeoutFixture(mode)
+    const pending = fixture.listProjectReleases()
+    if (mode === 'stalled-headers') fixture.expire()
+    await assert.rejects(pending, /RELEASE_LIST_FAILED/)
+    assert.equal(fixture.timers.size, 0)
+  }
 })

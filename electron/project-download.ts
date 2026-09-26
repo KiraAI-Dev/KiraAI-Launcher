@@ -23,11 +23,15 @@ function isPermissionError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && ((error as NodeJS.ErrnoException).code === 'EACCES' || (error as NodeJS.ErrnoException).code === 'EPERM')
 }
 
-async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestInit): Promise<Response> {
+/** Keeps the abort deadline active until the optional response reader finishes. */
+async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestInit): Promise<Response>
+async function fetchWithTimeout<T>(url: string, timeoutMs: number, init: RequestInit | undefined, readResponse: (response: Response) => Promise<T>): Promise<T>
+async function fetchWithTimeout<T>(url: string, timeoutMs: number, init?: RequestInit, readResponse?: (response: Response) => Promise<T>): Promise<Response | T> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await net.fetch(url, { ...init, signal: controller.signal })
+    const response = await net.fetch(url, { ...init, signal: controller.signal })
+    return readResponse ? await readResponse(response) : response
   } finally {
     clearTimeout(timeout)
   }
@@ -35,15 +39,16 @@ async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestIn
 
 export async function listProjectReleases(): Promise<ProjectRelease[]> {
   try {
-    const response = await fetchWithTimeout('https://api.github.com/repos/KiraAI-Dev/KiraAI/releases?per_page=50', 15_000, {
+    const payload: unknown = await fetchWithTimeout('https://api.github.com/repos/KiraAI-Dev/KiraAI/releases?per_page=50', 15_000, {
       headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'KiraAI-Launcher' },
+    }, async (response) => {
+      const rateLimited = response.status === 429 || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')))
+      if (!response.ok) {
+        await response.body?.cancel()
+        throw downloadError(rateLimited ? 'RELEASE_LIST_RATE_LIMITED' : 'RELEASE_LIST_FAILED')
+      }
+      return response.json()
     })
-    const rateLimited = response.status === 429 || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')))
-    if (!response.ok) {
-      await response.body?.cancel()
-      throw downloadError(rateLimited ? 'RELEASE_LIST_RATE_LIMITED' : 'RELEASE_LIST_FAILED')
-    }
-    const payload: unknown = await response.json()
     if (!Array.isArray(payload)) throw downloadError('RELEASE_LIST_FAILED')
     const releases: ProjectRelease[] = []
     for (const release of payload.slice(0, 50)) {
@@ -62,13 +67,14 @@ export async function listProjectReleases(): Promise<ProjectRelease[]> {
 async function getLatestReleaseArchiveUrl(): Promise<string> {
   let rateLimited = false
   try {
-    const response = await fetchWithTimeout(KIRAAI_RELEASES_API_URL, 15_000, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'KiraAI-Launcher' } })
-    rateLimited = response.status === 429 || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')))
-    if (!response.ok) {
-      await response.body?.cancel()
-      throw new Error('HTTP_ERROR')
-    }
-    const payload = await response.json() as { tag_name?: unknown }
+    const payload = await fetchWithTimeout(KIRAAI_RELEASES_API_URL, 15_000, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'KiraAI-Launcher' } }, async (response) => {
+      rateLimited = response.status === 429 || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')))
+      if (!response.ok) {
+        await response.body?.cancel()
+        throw new Error('HTTP_ERROR')
+      }
+      return response.json() as Promise<{ tag_name?: unknown }>
+    })
     if (typeof payload.tag_name !== 'string' || !payload.tag_name.trim()) throw new Error('INVALID_RESPONSE')
     return 'https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/' + encodeURIComponent(payload.tag_name) + '.zip'
   } catch {
