@@ -1,12 +1,12 @@
-import { net } from 'electron'
+import { fetchWithTimeout } from './http.js'
+import { getLatestReleaseArchiveUrl } from './project-releases.js'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 import { getLocalProject } from './local-project.js'
 import { registerProject } from './project-store.js'
-import type { ProjectProgressReporter, ProjectRelease, StoredProject } from './types.js'
+import type { ProjectProgressReporter, StoredProject } from './types.js'
 
-const KIRAAI_RELEASES_API_URL = 'https://api.github.com/repos/KiraAI-Dev/KiraAI/releases/latest'
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000
 const MAX_ARCHIVE_SIZE = 512 * 1024 * 1024
 const MAX_EXTRACTED_SIZE = 1024 * 1024 * 1024
@@ -21,118 +21,6 @@ function isDownloadError(error: unknown): boolean {
 
 function isPermissionError(error: unknown): boolean {
   return typeof error === 'object' && error !== null && 'code' in error && ((error as NodeJS.ErrnoException).code === 'EACCES' || (error as NodeJS.ErrnoException).code === 'EPERM')
-}
-
-/** Keeps the abort deadline active until the optional response reader finishes. */
-async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestInit): Promise<Response>
-async function fetchWithTimeout<T>(url: string, timeoutMs: number, init: RequestInit | undefined, readResponse: (response: Response) => Promise<T>): Promise<T>
-async function fetchWithTimeout<T>(url: string, timeoutMs: number, init?: RequestInit, readResponse?: (response: Response) => Promise<T>): Promise<Response | T> {
-  const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const response = await net.fetch(url, { ...init, signal: controller.signal })
-    return readResponse ? await readResponse(response) : response
-  } finally {
-    clearTimeout(timeout)
-  }
-}
-
-export async function listProjectReleases(): Promise<ProjectRelease[]> {
-  try {
-    const payload: unknown = await fetchWithTimeout('https://api.github.com/repos/KiraAI-Dev/KiraAI/releases?per_page=50', 15_000, {
-      headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'KiraAI-Launcher' },
-    }, async (response) => {
-      const rateLimited = response.status === 429 || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')))
-      if (!response.ok) {
-        await response.body?.cancel()
-        throw downloadError(rateLimited ? 'RELEASE_LIST_RATE_LIMITED' : 'RELEASE_LIST_FAILED')
-      }
-      return response.json()
-    })
-    if (!Array.isArray(payload)) throw downloadError('RELEASE_LIST_FAILED')
-    const releases: ProjectRelease[] = []
-    for (const release of payload.slice(0, 50)) {
-      if (!release || release.draft || typeof release.tag_name !== 'string' || !release.tag_name.trim()) continue
-      if (!releases.some(({ tag }) => tag === release.tag_name)) {
-        releases.push({ tag: release.tag_name, prerelease: release.prerelease === true })
-      }
-    }
-    return releases
-  } catch (error) {
-    if (error instanceof Error && error.message === 'RELEASE_LIST_RATE_LIMITED') throw error
-    throw downloadError('RELEASE_LIST_FAILED')
-  }
-}
-
-async function getLatestReleaseArchiveUrl(): Promise<string> {
-  let rateLimited = false
-  try {
-    const payload = await fetchWithTimeout(KIRAAI_RELEASES_API_URL, 15_000, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'KiraAI-Launcher' } }, async (response) => {
-      rateLimited = response.status === 429 || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')))
-      if (!response.ok) {
-        await response.body?.cancel()
-        throw new Error('HTTP_ERROR')
-      }
-      return response.json() as Promise<{ tag_name?: unknown }>
-    })
-    if (typeof payload.tag_name !== 'string' || !payload.tag_name.trim()) throw new Error('INVALID_RESPONSE')
-    return 'https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/' + encodeURIComponent(payload.tag_name) + '.zip'
-  } catch {
-    // The public release page remains usable when the REST API is unavailable.
-    // Follow GitHub's canonical repository redirect, including repository transfers.
-  }
-
-  try {
-    return await getReleasePageArchiveUrl()
-  } catch {
-    throw downloadError(rateLimited ? 'RELEASE_RATE_LIMITED' : 'RELEASE_LOOKUP_FAILED')
-  }
-}
-
-function getReleasePageArchiveUrl(): Promise<string> {
-  // Electron net.fetch does not expose the final Response.url reliably.
-  return new Promise((resolve, reject) => {
-    const request = net.request({ url: 'https://github.com/KiraAI-Dev/KiraAI/releases/latest', redirect: 'manual' })
-    let settled = false
-    let redirects = 0
-    const finish = (archiveUrl?: string) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      request.abort()
-      if (archiveUrl) resolve(archiveUrl)
-      else reject(downloadError('RELEASE_LOOKUP_FAILED'))
-    }
-    const timeout = setTimeout(() => finish(), 15_000)
-    request.on('redirect', (_statusCode, _method, target) => {
-      try {
-        const releaseUrl = new URL(target)
-        if (++redirects > 5 || releaseUrl.origin !== 'https://github.com') return finish()
-        const match = /^\/([^/]+\/KiraAI)\/releases\/tag\/(.+)$/i.exec(releaseUrl.pathname)
-        if (match) {
-          const tag = decodeURIComponent(match[2])
-          if (!tag.trim()) return finish()
-          return finish('https://github.com/' + match[1] + '/archive/refs/tags/' + encodeURIComponent(tag) + '.zip')
-        }
-        if (!/^\/[^/]+\/KiraAI\/releases\/latest$/i.test(releaseUrl.pathname)) return finish()
-        request.followRedirect()
-      } catch {
-        finish()
-      }
-    })
-    request.once('error', () => finish())
-    request.once('response', (response) => {
-      response.once('error', () => finish())
-      finish()
-    })
-    try {
-      request.setHeader('Accept', 'text/html')
-      request.setHeader('User-Agent', 'KiraAI-Launcher')
-      request.end()
-    } catch {
-      finish()
-    }
-  })
 }
 
 async function downloadArchive(url: string, archivePath: string, report: ProjectProgressReporter): Promise<void> {

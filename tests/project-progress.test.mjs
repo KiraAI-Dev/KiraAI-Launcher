@@ -19,7 +19,7 @@ function loadSource(file, dependencies = {}, globals = {}, names) {
   vm.runInNewContext(outputText, { exports, require: (id) => {
     assert.ok(id in dependencies, 'Unexpected dependency: ' + id)
     return dependencies[id]
-  }, Buffer, Response, URL, AbortController, setTimeout, clearTimeout, ...globals })
+  }, Buffer, Response, URL, Error, AbortController, setTimeout, clearTimeout, ...globals })
   return exports
 }
 
@@ -61,8 +61,7 @@ function downloadFixture({ knownSize = true, corrupt = false, existing = false, 
     readdir: async () => [{ name: 'release', isDirectory: () => true }],
     rename: async () => {}, rm: async (target) => removed.push(target),
   }
-  const { downloadAndRegisterProject } = loadSource('electron/project-download.ts', {
-    electron: { net: { fetch: async (url) => {
+  const net = { fetch: async (url) => {
       fetched = true
       requests.push(url)
       if (failFetch) throw new Error('network')
@@ -72,7 +71,11 @@ function downloadFixture({ knownSize = true, corrupt = false, existing = false, 
         controller.enqueue(archive.subarray(0, 20)); controller.enqueue(archive.subarray(20)); controller.close()
       } })
       return new Response(body, { headers: knownSize ? { 'content-length': String(archive.length) } : {} })
-    } } },
+    } }
+  const http = loadSource('electron/http.ts', { electron: { net } })
+  const releases = loadSource('electron/project-releases.ts', { electron: { net }, './http.js': http })
+  const { downloadAndRegisterProject } = loadSource('electron/project-download.ts', {
+    './http.js': http, './project-releases.js': releases,
     'node:fs': { promises: fs }, 'node:path': path.posix, 'node:zlib': {},
     './local-project.js': { getLocalProject: async () => ({ type: 'local' }) },
     './project-store.js': { registerProject: async (project) => { registered = true; return project } },
@@ -241,7 +244,7 @@ function releaseLookupFixture(apiResponse, pageUrl = 'https://github.com/xxynet/
   // Electron 33 can close the request's writable stream before network redirects.
   request.end = () => { request.emit('close'); send() }
   request.followRedirect = send
-  const { getLatestReleaseArchiveUrl } = loadSource('electron/project-download.ts', {}, {
+  const { fetchLatestReleaseArchiveUrl } = loadSource('electron/project-releases.ts', {}, {
     KIRAAI_RELEASES_API_URL: 'https://api.github.com/repos/KiraAI-Dev/KiraAI/releases/latest',
     net: { request: (options) => {
       assert.equal(options.redirect, 'manual')
@@ -253,8 +256,8 @@ function releaseLookupFixture(apiResponse, pageUrl = 'https://github.com/xxynet/
       if (apiResponse instanceof Error) throw apiResponse
       return readResponse(apiResponse)
     },
-  }, ['getLatestReleaseArchiveUrl', 'getReleasePageArchiveUrl', 'downloadError'])
-  return { run: getLatestReleaseArchiveUrl, requests, aborted: () => aborted }
+  }, ['fetchLatestReleaseArchiveUrl', 'getReleasePageArchiveUrl', 'downloadError'])
+  return { run: fetchLatestReleaseArchiveUrl, requests, aborted: () => aborted }
 }
 
 test('successful release API lookup does not request the fallback page', async () => {
@@ -322,7 +325,7 @@ test('release page timeout aborts the pending request', async () => {
   request.setHeader = () => {}
   request.end = () => {}
   request.abort = () => { aborted = true }
-  const { getReleasePageArchiveUrl } = loadSource('electron/project-download.ts', {}, {
+  const { getReleasePageArchiveUrl } = loadSource('electron/project-releases.ts', {}, {
     net: { request: () => request },
     setTimeout: (callback, milliseconds) => { assert.equal(milliseconds, 15000); onTimeout = callback; return 1 },
     clearTimeout: () => { cleared = true },
@@ -368,14 +371,14 @@ test('invalid release selections fail before filesystem or network work', async 
 
 function releaseListFixture(response) {
   const requests = []
-  const { listProjectReleases } = loadSource('electron/project-download.ts', {}, {
+  const { fetchProjectReleases } = loadSource('electron/project-releases.ts', {}, {
     fetchWithTimeout: async (url, _timeout, _init, readResponse) => {
       requests.push(url)
       if (response instanceof Error) throw response
       return readResponse(response)
     },
-  }, ['listProjectReleases', 'downloadError'])
-  return { run: listProjectReleases, requests }
+  }, ['fetchProjectReleases', 'downloadError'])
+  return { run: fetchProjectReleases, requests }
 }
 
 test('release list filters drafts and invalid entries, deduplicates tags and retains prereleases', async () => {
@@ -414,7 +417,7 @@ test('release list distinguishes rate limits from malformed responses and networ
 
 function rendererReleasesFixture(releases) {
   const state = {
-    releasesLoading: { value: false }, releasesError: { value: '' }, releasesLoaded: { value: false },
+    releasesLoading: { value: false }, releasesError: { value: '' },
     projectReleases: { value: [] }, downloadReleaseTag: { value: 'v2' },
     actionInProgress: { value: false }, operationProgress: { value: null }, projectCreationMode: { value: null },
     projectError: { value: '' }, selectedLocalProject: { value: null }, downloadDirectory: { value: '' },
@@ -424,7 +427,7 @@ function rendererReleasesFixture(releases) {
   const functions = loadSource('src/App.vue', {}, {
     ...state, releasesRequestId: 0,
     requireLauncherBridge: () => ({ projects: { releases } }), getErrorMessage: (error) => error.message,
-  }, ['loadProjectReleases', 'openNewProjectModal'])
+  }, ['loadProjectReleases', 'openNewProjectModal', 'openDownloadProject'])
   return { ...state, ...functions }
 }
 
@@ -436,12 +439,12 @@ test('renderer can retry loading versions without changing the selected tag', as
   })
   await fixture.loadProjectReleases()
   assert.equal(fixture.releasesError.value, 'RELEASE_LIST_FAILED')
-  assert.equal(fixture.releasesLoaded.value, false)
+  assert.equal(fixture.projectReleases.value.length, 0)
   await fixture.loadProjectReleases()
   assert.equal(requests, 2)
   assert.deepEqual(fixture.projectReleases.value.map(({ tag }) => tag), ['v2', 'v1'])
   assert.equal(fixture.downloadReleaseTag.value, 'v2')
-  assert.equal(fixture.releasesLoaded.value, true)
+  assert.equal(fixture.projectReleases.value.length, 2)
   assert.equal(fixture.releasesLoading.value, false)
   assert.equal(fixture.releasesError.value, '')
 })
@@ -492,7 +495,7 @@ function releaseBodyTimeoutFixture(mode = 'stalled-body') {
   const timers = new Map(), requests = []
   let timerId = 0, bodyController, bodyStarted, fallbackCalls = 0
   const readingBody = new Promise((resolve) => { bodyStarted = resolve })
-  const functions = loadSource('electron/project-download.ts', {}, {
+  const globals = {
     KIRAAI_RELEASES_API_URL: 'https://api.github.com/repos/KiraAI-Dev/KiraAI/releases/latest',
     net: { fetch: async (url, { signal }) => {
       requests.push({ url, signal })
@@ -519,9 +522,12 @@ function releaseBodyTimeoutFixture(mode = 'stalled-body') {
     },
     clearTimeout: (id) => timers.delete(id),
     getReleasePageArchiveUrl: async () => { fallbackCalls++; return 'https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/v2.zip' },
-  }, ['fetchWithTimeout', 'listProjectReleases', 'getLatestReleaseArchiveUrl', 'downloadError'])
+  }
+  const http = loadSource('electron/http.ts', { electron: { net: globals.net } }, globals)
+  const functions = loadSource('electron/project-releases.ts', {}, { ...globals, ...http },
+    ['fetchProjectReleases', 'fetchLatestReleaseArchiveUrl', 'downloadError'])
   return {
-    ...functions, requests, timers, readingBody,
+    listProjectReleases: functions.fetchProjectReleases, getLatestReleaseArchiveUrl: functions.fetchLatestReleaseArchiveUrl, requests, timers, readingBody,
     expire: () => {
       assert.equal(timers.size, 1, 'deadline must remain active while the request is pending')
       Array.from(timers.values())[0]()
@@ -545,10 +551,10 @@ test('stalled release-list body times out, clears renderer loading, and allows r
   assert.equal(network.timers.size, 0)
   assert.equal(renderer.releasesLoading.value, false)
   assert.equal(renderer.releasesError.value, 'RELEASE_LIST_FAILED')
-  assert.equal(renderer.releasesLoaded.value, false)
+  assert.equal(renderer.projectReleases.value.length, 0)
   network.succeedNext()
   await renderer.loadProjectReleases()
-  assert.equal(renderer.releasesLoaded.value, true)
+  assert.equal(renderer.projectReleases.value.length, 1)
   assert.equal(renderer.releasesError.value, '')
   assert.equal(renderer.projectReleases.value[0].tag, 'v2')
   assert.equal(network.timers.size, 0)
@@ -588,4 +594,122 @@ test('release deadline still covers stalled headers and clears after connection 
     await assert.rejects(pending, /RELEASE_LIST_FAILED/)
     assert.equal(fixture.timers.size, 0)
   }
+})
+
+function releaseCacheFixture(fetchResponse = (url, count) => Response.json(url.endsWith('/latest')
+  ? { tag_name: `v${count}` } : [{ tag_name: `v${count}`, prerelease: false }])) {
+  let now = 0
+  const requests = []
+  const net = { fetch: async (url, init) => {
+    requests.push(url)
+    return fetchResponse(url, requests.length, init)
+  } }
+  const http = loadSource('electron/http.ts', { electron: { net } })
+  const releases = loadSource('electron/project-releases.ts', { electron: { net }, './http.js': http }, { Date: { now: () => now } })
+  return { ...releases, requests, setTime: (value) => { now = value } }
+}
+
+test('main-process release cache expires after 15 minutes without extending on reads', async () => {
+  const fixture = releaseCacheFixture()
+  const first = await fixture.listProjectReleases()
+  assert.equal(first[0].tag, 'v1')
+  first[0].tag = 'changed by consumer'
+  first.push({ tag: 'injected', prerelease: false })
+  fixture.setTime(10 * 60 * 1000)
+  const second = await fixture.listProjectReleases()
+  assert.equal(second.length, 1)
+  assert.equal(second[0].tag, 'v1')
+  fixture.setTime(15 * 60 * 1000 - 1)
+  await fixture.listProjectReleases()
+  assert.equal(fixture.requests.length, 1)
+  fixture.setTime(15 * 60 * 1000)
+  assert.equal(fixture.requests.length, 1, 'expiry must not trigger a background request')
+  assert.equal((await fixture.listProjectReleases())[0].tag, 'v2')
+  assert.equal(fixture.requests.length, 2)
+})
+
+test('concurrent release consumers share one request and TTL starts when fetching succeeds', async () => {
+  let finish
+  const fixture = releaseCacheFixture(() => new Promise((resolve) => { finish = resolve }))
+  const first = fixture.listProjectReleases(), second = fixture.listProjectReleases()
+  assert.equal(fixture.requests.length, 1)
+  fixture.setTime(10_000)
+  finish(Response.json([{ tag_name: 'v2' }]))
+  const results = await Promise.all([first, second])
+  assert.equal(results[0][0].tag, 'v2')
+  assert.notEqual(results[0], results[1])
+  fixture.setTime(15 * 60 * 1000)
+  await fixture.listProjectReleases()
+  assert.equal(fixture.requests.length, 1, 'TTL begins on successful completion, not request start')
+  fixture.setTime(15 * 60 * 1000 + 10_000)
+  const refreshed = fixture.listProjectReleases()
+  assert.equal(fixture.requests.length, 2)
+  finish(Response.json([{ tag_name: 'v3' }]))
+  assert.equal((await refreshed)[0].tag, 'v3')
+})
+
+test('failed refresh is not cached and never serves expired release data', async () => {
+  const fixture = releaseCacheFixture((_url, count) => {
+    if (count === 2) return new Response('', { status: 429 })
+    return Response.json([{ tag_name: `v${count}` }])
+  })
+  await fixture.listProjectReleases()
+  fixture.setTime(15 * 60 * 1000)
+  await assert.rejects(fixture.listProjectReleases(), /RELEASE_LIST_RATE_LIMITED/)
+  assert.equal((await fixture.listProjectReleases())[0].tag, 'v3')
+  await fixture.listProjectReleases()
+  assert.equal(fixture.requests.length, 3)
+})
+
+test('concurrent failures release the pending request and invalid payloads remain retryable', async () => {
+  let fail
+  const fixture = releaseCacheFixture((_url, count) => {
+    if (count === 1) return new Promise((_resolve, reject) => { fail = reject })
+    if (count === 2) return Response.json({ invalid: true })
+    return Response.json([])
+  })
+  const first = fixture.listProjectReleases(), second = fixture.listProjectReleases()
+  assert.equal(fixture.requests.length, 1)
+  fail(new Error('network'))
+  await Promise.all([assert.rejects(first, /RELEASE_LIST_FAILED/), assert.rejects(second, /RELEASE_LIST_FAILED/)])
+  await assert.rejects(fixture.listProjectReleases(), /RELEASE_LIST_FAILED/)
+  assert.equal((await fixture.listProjectReleases()).length, 0)
+  assert.equal((await fixture.listProjectReleases()).length, 0)
+  assert.equal(fixture.requests.length, 3, 'a valid empty list is cached, errors are not')
+})
+
+test('latest-release resolution shares its cache across downloads and keeps its own TTL', async () => {
+  const fixture = releaseCacheFixture()
+  await fixture.listProjectReleases()
+  fixture.setTime(60_000)
+  const urls = await Promise.all([fixture.getLatestReleaseArchiveUrl(), fixture.getLatestReleaseArchiveUrl()])
+  assert.equal(urls[0], 'https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/v2.zip')
+  assert.equal(urls[0], urls[1])
+  assert.equal(fixture.requests.length, 2)
+  fixture.setTime(15 * 60 * 1000)
+  await fixture.listProjectReleases()
+  assert.equal(await fixture.getLatestReleaseArchiveUrl(), urls[0])
+  assert.equal(fixture.requests.length, 3)
+  fixture.setTime(16 * 60 * 1000)
+  assert.equal(await fixture.getLatestReleaseArchiveUrl(), 'https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/v4.zip')
+  assert.equal(fixture.requests.length, 4)
+})
+
+test('reopening the download form reuses the launcher cache and refreshes after expiry', async () => {
+  const network = releaseCacheFixture()
+  const renderer = rendererReleasesFixture(network.listProjectReleases)
+  const settle = () => new Promise((resolve) => setImmediate(resolve))
+  renderer.openNewProjectModal()
+  renderer.openDownloadProject()
+  await settle()
+  assert.equal(renderer.projectReleases.value[0].tag, 'v1')
+  renderer.openNewProjectModal()
+  renderer.openDownloadProject()
+  await settle()
+  assert.equal(network.requests.length, 1)
+  network.setTime(15 * 60 * 1000)
+  renderer.openDownloadProject()
+  await settle()
+  assert.equal(network.requests.length, 2)
+  assert.equal(renderer.projectReleases.value[0].tag, 'v2')
 })

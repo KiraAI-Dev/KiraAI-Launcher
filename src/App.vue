@@ -50,7 +50,6 @@ const downloadReleaseTag = ref('')
 const projectReleases = ref<ProjectRelease[]>([])
 const releasesLoading = ref(false)
 const releasesError = ref('')
-const releasesLoaded = ref(false)
 let releasesRequestId = 0
 const releaseOptions = computed(() => [
   { label: t.value.releaseSelection.latest, value: '' },
@@ -400,7 +399,6 @@ function openNewProjectModal() {
   downloadDirectory.value = ''
   downloadReleaseTag.value = ''
   projectReleases.value = []
-  releasesLoaded.value = false
   releasesError.value = ''
   releasesLoading.value = false
   releasesRequestId += 1
@@ -436,7 +434,7 @@ async function addLocalProject() {
 
 function openDownloadProject() {
   projectCreationMode.value = 'download'
-  if (!releasesLoaded.value) void loadProjectReleases()
+  void loadProjectReleases()
 }
 
 async function loadProjectReleases() {
@@ -444,11 +442,11 @@ async function loadProjectReleases() {
   const requestId = ++releasesRequestId
   releasesLoading.value = true
   releasesError.value = ''
+  projectReleases.value = []
   try {
     const result = await requireLauncherBridge().projects.releases()
     if (requestId !== releasesRequestId) return
     projectReleases.value = result
-    releasesLoaded.value = true
   } catch (error) {
     if (requestId === releasesRequestId) releasesError.value = getErrorMessage(error)
   } finally {
