@@ -70,7 +70,8 @@ interface Window {
       chooseLocal: () => Promise<LocalProjectCandidate | null>
       addLocal: (projectPath: string) => Promise<ManagedProject>
       chooseDownloadDirectory: () => Promise<string | null>
-      download: (value: { parentPath: string; name: string; requestId: string }) => Promise<ManagedProject>
+      releases: () => Promise<import('../electron/types').ProjectRelease[]>
+      download: (value: { parentPath: string; name: string; requestId: string; releaseTag?: string }) => Promise<ManagedProject>
       connectCloud: (value: { name: string; url: string; accessToken?: string }) => Promise<ManagedProject>
       update: (value: { id: string; name: string; host?: string; port?: number | null; url?: string; accessToken?: string; launchArgs?: string[]; environmentVariables?: Record<string, string> }) => Promise<ManagedProject>
       getAccessToken: (id: string) => Promise<string>

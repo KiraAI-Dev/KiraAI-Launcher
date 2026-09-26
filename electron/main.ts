@@ -11,7 +11,7 @@ import { checkEnvironment, installEnvironmentTool } from './environment.js'
 import { getLocalProject, getLocalWebuiUrl, normalizeLocalWebuiHost, saveLocalWebuiSettings } from './local-project.js'
 import { readProjectLog } from './project-logs.js'
 import { initializeLauncherLog, readLauncherLog, writeLauncherLog } from './logger.js'
-import { downloadAndRegisterProject as downloadProject } from './project-download.js'
+import { downloadAndRegisterProject as downloadProject, listProjectReleases } from './project-download.js'
 import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
 import { defaultSettings, loadSettings, saveSettings } from './settings.js'
 import type { CloseAction, LauncherSettings, LauncherUpdateCheck, ManagedProject, OverviewData, ProjectProgressReporter, StoredProject } from './types.js'
@@ -871,13 +871,15 @@ app.whenReady().then(async () => {
     })
     return result.canceled ? null : result.filePaths[0] ?? null
   })
+  ipcMain.handle('projects:releases', () => listProjectReleases())
   ipcMain.handle('projects:download', async (_event, value: unknown) => {
     if (typeof value !== 'object' || value === null) throw new Error('DOWNLOAD_INPUT_INVALID')
-    const { parentPath, name, requestId } = value as { parentPath?: unknown; name?: unknown; requestId?: unknown }
+    const { parentPath, name, requestId, releaseTag } = value as { parentPath?: unknown; name?: unknown; requestId?: unknown; releaseTag?: unknown }
     if (typeof parentPath !== 'string' || typeof name !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) {
       throw new Error('PROJECT_NAME_INVALID')
     }
-    return downloadProject(parentPath, name, createProjectProgressReporter(_event, requestId)).then(toManagedProject)
+    if (releaseTag !== undefined && typeof releaseTag !== 'string') throw new Error('DOWNLOAD_INPUT_INVALID')
+    return downloadProject(parentPath, name, createProjectProgressReporter(_event, requestId), releaseTag).then(toManagedProject)
   })
   ipcMain.handle('projects:connect-cloud', async (_event, value: unknown) => {
     if (typeof value !== 'object' || value === null) throw new Error('CLOUD_INPUT_INVALID')

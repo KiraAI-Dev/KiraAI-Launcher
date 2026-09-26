@@ -6,7 +6,7 @@ import LogEntry from './components/LogEntry.vue'
 import { getLogEntries } from './components/log-format'
 import LauncherReleaseNotes from './components/LauncherReleaseNotes.vue'
 import ProjectOperationProgress from './components/ProjectOperationProgress.vue'
-import { projectOperationSteps, type ProjectOperation } from '../electron/types'
+import { projectOperationSteps, type ProjectOperation, type ProjectRelease } from '../electron/types'
 import { messages, projectAdvancedSettingsMessages, projectProgressMessages, type Language } from './i18n/messages'
 import { AddOutline, CloudOutline, CloudUploadOutline, CodeSlashOutline, CubeOutline, DocumentTextOutline, DownloadOutline, FolderOpenOutline, HardwareChipOutline, HomeOutline, InformationCircleOutline, LanguageOutline, LayersOutline, MoonOutline, OpenOutline, PlayOutline, RefreshOutline, RocketOutline, SettingsOutline, StopOutline, SunnyOutline, TrashOutline } from '@vicons/ionicons5'
 
@@ -46,6 +46,19 @@ const progressText = computed(() => projectProgressMessages[language.value])
 let removeProjectProgressListener: (() => void) | undefined
 const downloadDirectory = ref('')
 const downloadProjectName = ref('kira-ai')
+const downloadReleaseTag = ref('')
+const projectReleases = ref<ProjectRelease[]>([])
+const releasesLoading = ref(false)
+const releasesError = ref('')
+const releasesLoaded = ref(false)
+let releasesRequestId = 0
+const releaseOptions = computed(() => [
+  { label: t.value.releaseSelection.latest, value: '' },
+  ...projectReleases.value.map((release) => ({
+    label: release.tag + (release.prerelease ? ` (${t.value.releaseSelection.prerelease})` : ''),
+    value: release.tag,
+  })),
+])
 const cloudProjectName = ref('')
 const cloudProjectUrl = ref('')
 const cloudAccessToken = ref('')
@@ -385,6 +398,12 @@ function openNewProjectModal() {
   projectError.value = ''
   selectedLocalProject.value = null
   downloadDirectory.value = ''
+  downloadReleaseTag.value = ''
+  projectReleases.value = []
+  releasesLoaded.value = false
+  releasesError.value = ''
+  releasesLoading.value = false
+  releasesRequestId += 1
   cloudProjectName.value = ''
   cloudProjectUrl.value = ''
   cloudAccessToken.value = ''
@@ -415,6 +434,28 @@ async function addLocalProject() {
   }
 }
 
+function openDownloadProject() {
+  projectCreationMode.value = 'download'
+  if (!releasesLoaded.value) void loadProjectReleases()
+}
+
+async function loadProjectReleases() {
+  if (releasesLoading.value) return
+  const requestId = ++releasesRequestId
+  releasesLoading.value = true
+  releasesError.value = ''
+  try {
+    const result = await requireLauncherBridge().projects.releases()
+    if (requestId !== releasesRequestId) return
+    projectReleases.value = result
+    releasesLoaded.value = true
+  } catch (error) {
+    if (requestId === releasesRequestId) releasesError.value = getErrorMessage(error)
+  } finally {
+    if (requestId === releasesRequestId) releasesLoading.value = false
+  }
+}
+
 async function chooseDownloadDirectory() {
   projectError.value = ''
   try {
@@ -429,7 +470,7 @@ async function downloadProject() {
   actionInProgress.value = true
   projectError.value = ''
   try {
-    const project = await trackProjectOperation('download', (requestId) => requireLauncherBridge().projects.download({ parentPath: downloadDirectory.value, name: downloadProjectName.value.trim(), requestId }))
+    const project = await trackProjectOperation('download', (requestId) => requireLauncherBridge().projects.download({ parentPath: downloadDirectory.value, name: downloadProjectName.value.trim(), requestId, releaseTag: downloadReleaseTag.value || undefined }))
     upsertManagedProject(project)
   } catch (error) {
     projectError.value = getErrorMessage(error)
@@ -752,10 +793,17 @@ onBeforeUnmount(() => {
       </n-layout>
       </n-layout>
       <n-modal v-model:show="showNewProjectModal" preset="card" :title="projectCreationMode === 'download' ? progressText.downloadTitle : t.newProjectTitle" class="project-modal" content-scrollable :mask-closable="!actionInProgress" :closable="!actionInProgress" :close-on-esc="!actionInProgress">
-      <n-space v-if="projectCreationMode === null" vertical :size="12"><n-text depth="3">{{ t.chooseProjectMethod }}</n-text><div class="project-source-grid"><button class="project-source-option" type="button" @click="projectCreationMode = 'local'"><n-icon :component="FolderOpenOutline" :color="activePalette.primary" size="26" /><strong>{{ t.localProject }}</strong><span>{{ t.localProjectSub }}</span></button><button class="project-source-option" type="button" @click="projectCreationMode = 'download'"><n-icon :component="DownloadOutline" :color="activePalette.primary" size="26" /><strong>{{ t.downloadProject }}</strong><span>{{ t.downloadProjectSub }}</span></button><button class="project-source-option" type="button" @click="projectCreationMode = 'cloud'"><n-icon :component="CloudOutline" :color="activePalette.primary" size="26" /><strong>{{ t.cloudProject }}</strong><span>{{ t.cloudProjectSub }}</span></button></div></n-space>
+      <n-space v-if="projectCreationMode === null" vertical :size="12"><n-text depth="3">{{ t.chooseProjectMethod }}</n-text><div class="project-source-grid"><button class="project-source-option" type="button" @click="projectCreationMode = 'local'"><n-icon :component="FolderOpenOutline" :color="activePalette.primary" size="26" /><strong>{{ t.localProject }}</strong><span>{{ t.localProjectSub }}</span></button><button class="project-source-option" type="button" @click="openDownloadProject"><n-icon :component="DownloadOutline" :color="activePalette.primary" size="26" /><strong>{{ t.downloadProject }}</strong><span>{{ t.downloadProjectSub }}</span></button><button class="project-source-option" type="button" @click="projectCreationMode = 'cloud'"><n-icon :component="CloudOutline" :color="activePalette.primary" size="26" /><strong>{{ t.cloudProject }}</strong><span>{{ t.cloudProjectSub }}</span></button></div></n-space>
       <n-space v-else-if="projectCreationMode === 'local'" vertical :size="18"><div><strong>{{ t.selectLocalProject }}</strong><p class="modal-hint">{{ t.selectLocalHint }}</p></div><n-button block @click="chooseLocalProject"><template #icon><n-icon :component="FolderOpenOutline" /></template>{{ t.selectLocalProject }}</n-button><n-alert v-if="selectedLocalProject" type="success" :show-icon="false">{{ t.selectedDirectory }}：{{ selectedLocalProject.projectPath }}</n-alert><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="actionInProgress" @click="projectCreationMode = null">{{ t.back }}</n-button><n-button type="primary" :disabled="!selectedLocalProject" :loading="actionInProgress" @click="addLocalProject">{{ t.manage }}</n-button></n-space></n-space>
       <n-space v-else-if="projectCreationMode === 'download'" vertical :size="18">
         <n-form v-if="!operationProgress || progressStatus === 'error'" label-placement="top" :disabled="actionInProgress">
+          <n-form-item :label="t.releaseSelection.version">
+            <n-space vertical style="width: 100%">
+              <n-select v-model:value="downloadReleaseTag" :options="releaseOptions" :loading="releasesLoading" :disabled="actionInProgress" filterable />
+              <n-text v-if="releasesError" type="warning">{{ releasesError }}</n-text>
+              <n-button v-if="releasesError" size="small" :loading="releasesLoading" :disabled="actionInProgress || releasesLoading" @click="loadProjectReleases">{{ t.releaseSelection.retry }}</n-button>
+            </n-space>
+          </n-form-item>
           <n-form-item :label="t.downloadDirectory"><n-input :value="downloadDirectory" readonly :placeholder="t.chooseDirectory"><template #suffix><n-button text type="primary" :disabled="actionInProgress" @click="chooseDownloadDirectory">{{ t.chooseDirectory }}</n-button></template></n-input></n-form-item>
           <n-form-item :label="t.projectName"><n-input v-model:value="downloadProjectName" :placeholder="t.projectName" /><template #feedback>{{ t.projectNameHint }}</template></n-form-item>
         </n-form>
