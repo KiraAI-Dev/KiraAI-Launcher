@@ -1,3 +1,19 @@
+export const projectOperationSteps = {
+  download: ['directory', 'release', 'download', 'extract', 'register'],
+  deploy: ['validate', 'packageIndex', 'venv', 'dependencies', 'launch', 'health'],
+} as const
+
+export type ProjectOperation = keyof typeof projectOperationSteps
+export type ProjectProgressUpdate = {
+  stage: (typeof projectOperationSteps)[ProjectOperation][number]
+  completed?: number
+  total?: number
+}
+export type ProjectProgress = ProjectProgressUpdate & {
+  requestId: string
+}
+export type ProjectProgressReporter = (progress: ProjectProgressUpdate) => void
+
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type ThemeColor = 'blue' | 'purple' | 'green' | 'orange'
 export type Language = 'zh-CN' | 'en-US'

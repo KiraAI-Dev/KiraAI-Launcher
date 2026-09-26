@@ -4,7 +4,7 @@ import path from 'node:path'
 import { inflateRawSync } from 'node:zlib'
 import { getLocalProject } from './local-project.js'
 import { registerProject } from './project-store.js'
-import type { StoredProject } from './types.js'
+import type { ProjectProgressReporter, StoredProject } from './types.js'
 
 const KIRAAI_RELEASES_API_URL = 'https://api.github.com/repos/KiraAI-Dev/KiraAI/releases/latest'
 const DOWNLOAD_TIMEOUT_MS = 5 * 60 * 1000
@@ -16,7 +16,7 @@ function downloadError(code: string): Error {
 }
 
 function isDownloadError(error: unknown): boolean {
-  return error instanceof Error && ['DOWNLOAD_DIRECTORY_EXISTS', 'DOWNLOAD_DIRECTORY_UNWRITABLE', 'DOWNLOAD_ARCHIVE_INVALID', 'RELEASE_LOOKUP_FAILED', 'DOWNLOAD_FAILED'].includes(error.message)
+  return error instanceof Error && ['DOWNLOAD_DIRECTORY_EXISTS', 'DOWNLOAD_DIRECTORY_UNWRITABLE', 'DOWNLOAD_ARCHIVE_INVALID', 'RELEASE_LOOKUP_FAILED', 'RELEASE_RATE_LIMITED', 'DOWNLOAD_FAILED'].includes(error.message)
 }
 
 function isPermissionError(error: unknown): boolean {
@@ -34,18 +34,76 @@ async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestIn
 }
 
 async function getLatestReleaseArchiveUrl(): Promise<string> {
+  let rateLimited = false
   try {
     const response = await fetchWithTimeout(KIRAAI_RELEASES_API_URL, 15_000, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'KiraAI-Launcher' } })
-    if (!response.ok) throw new Error('HTTP_ERROR')
+    rateLimited = response.status === 429 || (response.status === 403 && (response.headers.get('x-ratelimit-remaining') === '0' || response.headers.has('retry-after')))
+    if (!response.ok) {
+      await response.body?.cancel()
+      throw new Error('HTTP_ERROR')
+    }
     const payload = await response.json() as { tag_name?: unknown }
     if (typeof payload.tag_name !== 'string' || !payload.tag_name.trim()) throw new Error('INVALID_RESPONSE')
-    return `https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/${encodeURIComponent(payload.tag_name)}.zip`
+    return 'https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/' + encodeURIComponent(payload.tag_name) + '.zip'
   } catch {
-    throw downloadError('RELEASE_LOOKUP_FAILED')
+    // The public release page remains usable when the REST API is unavailable.
+    // Follow GitHub's canonical repository redirect, including repository transfers.
+  }
+
+  try {
+    return await getReleasePageArchiveUrl()
+  } catch {
+    throw downloadError(rateLimited ? 'RELEASE_RATE_LIMITED' : 'RELEASE_LOOKUP_FAILED')
   }
 }
 
-async function downloadArchive(url: string, archivePath: string): Promise<void> {
+function getReleasePageArchiveUrl(): Promise<string> {
+  // Electron net.fetch does not expose the final Response.url reliably.
+  return new Promise((resolve, reject) => {
+    const request = net.request({ url: 'https://github.com/KiraAI-Dev/KiraAI/releases/latest', redirect: 'manual' })
+    let settled = false
+    let redirects = 0
+    const finish = (archiveUrl?: string) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      request.abort()
+      if (archiveUrl) resolve(archiveUrl)
+      else reject(downloadError('RELEASE_LOOKUP_FAILED'))
+    }
+    const timeout = setTimeout(() => finish(), 15_000)
+    request.on('redirect', (_statusCode, _method, target) => {
+      try {
+        const releaseUrl = new URL(target)
+        if (++redirects > 5 || releaseUrl.origin !== 'https://github.com') return finish()
+        const match = /^\/([^/]+\/KiraAI)\/releases\/tag\/(.+)$/i.exec(releaseUrl.pathname)
+        if (match) {
+          const tag = decodeURIComponent(match[2])
+          if (!tag.trim()) return finish()
+          return finish('https://github.com/' + match[1] + '/archive/refs/tags/' + encodeURIComponent(tag) + '.zip')
+        }
+        if (!/^\/[^/]+\/KiraAI\/releases\/latest$/i.test(releaseUrl.pathname)) return finish()
+        request.followRedirect()
+      } catch {
+        finish()
+      }
+    })
+    request.once('error', () => finish())
+    request.once('response', (response) => {
+      response.once('error', () => finish())
+      finish()
+    })
+    try {
+      request.setHeader('Accept', 'text/html')
+      request.setHeader('User-Agent', 'KiraAI-Launcher')
+      request.end()
+    } catch {
+      finish()
+    }
+  })
+}
+
+async function downloadArchive(url: string, archivePath: string, report: ProjectProgressReporter): Promise<void> {
   let response: Response
   try {
     response = await fetchWithTimeout(url, DOWNLOAD_TIMEOUT_MS, { headers: { Accept: 'application/zip', 'User-Agent': 'KiraAI-Launcher' } })
@@ -55,6 +113,8 @@ async function downloadArchive(url: string, archivePath: string): Promise<void> 
   if (!response.ok || !response.body) throw downloadError('DOWNLOAD_FAILED')
   const contentLength = Number(response.headers.get('content-length'))
   if (Number.isFinite(contentLength) && contentLength > MAX_ARCHIVE_SIZE) throw downloadError('DOWNLOAD_FAILED')
+  const total = Number.isFinite(contentLength) && contentLength > 0 ? contentLength : undefined
+  report({ stage: 'download', completed: 0, total })
   const archive = await fs.open(archivePath, 'wx')
   let received = 0
   try {
@@ -62,6 +122,7 @@ async function downloadArchive(url: string, archivePath: string): Promise<void> 
       received += chunk.byteLength
       if (received > MAX_ARCHIVE_SIZE) throw downloadError('DOWNLOAD_FAILED')
       await archive.write(chunk)
+      report({ stage: 'download', completed: received, total })
     }
   } finally {
     await archive.close()
@@ -89,13 +150,14 @@ function safeArchivePath(extractRoot: string, memberName: string): string {
   return target
 }
 
-async function extractReleaseArchive(archivePath: string, extractRoot: string): Promise<void> {
+async function extractReleaseArchive(archivePath: string, extractRoot: string, report: ProjectProgressReporter): Promise<void> {
   const archive = await fs.readFile(archivePath)
   if (archive.length < 22 || archive.length > MAX_ARCHIVE_SIZE) archiveError()
   const eocdOffset = findEndOfCentralDirectory(archive)
   const entries = archive.readUInt16LE(eocdOffset + 10)
   const centralDirectoryOffset = archive.readUInt32LE(eocdOffset + 16)
   if (entries === 0xffff || centralDirectoryOffset === 0xffffffff || centralDirectoryOffset >= archive.length) archiveError()
+  report({ stage: 'extract', completed: 0, total: entries })
   let offset = centralDirectoryOffset
   let extractedSize = 0
   for (let index = 0; index < entries; index += 1) {
@@ -115,6 +177,7 @@ async function extractReleaseArchive(archivePath: string, extractRoot: string): 
     const unixMode = externalAttributes >>> 16
     if ((unixMode & 0o170000) === 0o120000) {
       offset = headerEnd
+      report({ stage: 'extract', completed: index + 1, total: entries })
       continue
     }
     const isDirectory = memberName.endsWith('/')
@@ -141,6 +204,7 @@ async function extractReleaseArchive(archivePath: string, extractRoot: string): 
       await fs.writeFile(targetPath, contents, { flag: 'wx', mode: (unixMode & 0o777) || 0o644 })
     }
     offset = headerEnd
+    report({ stage: 'extract', completed: index + 1, total: entries })
   }
 }
 
@@ -149,7 +213,8 @@ async function findReleaseProjectRoot(extractRoot: string): Promise<string> {
   return entries.length === 1 && entries[0].isDirectory() ? path.join(extractRoot, entries[0].name) : extractRoot
 }
 
-export async function downloadAndRegisterProject(parentPath: string, name: string): Promise<StoredProject> {
+export async function downloadAndRegisterProject(parentPath: string, name: string, report: ProjectProgressReporter = () => {}): Promise<StoredProject> {
+  report({ stage: 'directory' })
   const destination = path.resolve(parentPath, name)
   if (path.dirname(destination) !== path.resolve(parentPath)) throw downloadError('DOWNLOAD_DIRECTORY_INVALID')
   const destinationExists = await fs.stat(destination).then(() => true, (error: NodeJS.ErrnoException) => {
@@ -158,6 +223,7 @@ export async function downloadAndRegisterProject(parentPath: string, name: strin
   })
   if (destinationExists) {
     try {
+      report({ stage: 'register' })
       const project = await getLocalProject(destination)
       return await registerProject({ ...project, name, projectPath: destination })
     } catch {
@@ -170,9 +236,14 @@ export async function downloadAndRegisterProject(parentPath: string, name: strin
     stagingDirectory = await fs.mkdtemp(path.join(parentPath, `.${name}-download-`))
     const archivePath = path.join(stagingDirectory, 'kira-ai-release.zip')
     const extractRoot = path.join(stagingDirectory, 'extracted')
-    await downloadArchive(await getLatestReleaseArchiveUrl(), archivePath)
+    report({ stage: 'release' })
+    const archiveUrl = await getLatestReleaseArchiveUrl()
+    report({ stage: 'download', completed: 0 })
+    await downloadArchive(archiveUrl, archivePath, report)
     await fs.mkdir(extractRoot)
-    await extractReleaseArchive(archivePath, extractRoot)
+    report({ stage: 'extract' })
+    await extractReleaseArchive(archivePath, extractRoot, report)
+    report({ stage: 'register' })
     const sourceRoot = await findReleaseProjectRoot(extractRoot)
     const project = await getLocalProject(sourceRoot)
     await fs.rename(sourceRoot, destination)
