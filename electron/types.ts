@@ -14,6 +14,11 @@ export type ProjectProgress = ProjectProgressUpdate & {
 }
 export type ProjectProgressReporter = (progress: ProjectProgressUpdate) => void
 
+export type ProjectRelease = {
+  tag: string
+  prerelease: boolean
+}
+
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type ThemeColor = 'blue' | 'purple' | 'green' | 'orange'
 export type Language = 'zh-CN' | 'en-US'

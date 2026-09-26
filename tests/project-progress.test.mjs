@@ -51,7 +51,7 @@ function archiveFixture() {
 
 function downloadFixture({ knownSize = true, corrupt = false, existing = false, failFetch = false, rateLimited = false } = {}) {
   const archive = corrupt ? Buffer.from('invalid') : archiveFixture()
-  const events = [], removed = [], writes = []
+  const events = [], removed = [], writes = [], requests = []
   let registered = false, fetched = false
   const fs = {
     stat: async () => { if (!existing) throw Object.assign(new Error(), { code: 'ENOENT' }); return {} },
@@ -64,6 +64,7 @@ function downloadFixture({ knownSize = true, corrupt = false, existing = false, 
   const { downloadAndRegisterProject } = loadSource('electron/project-download.ts', {
     electron: { net: { fetch: async (url) => {
       fetched = true
+      requests.push(url)
       if (failFetch) throw new Error('network')
       if (rateLimited) return new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } })
       if (url.includes('/releases/latest')) return Response.json({ tag_name: 'v1' })
@@ -76,7 +77,7 @@ function downloadFixture({ knownSize = true, corrupt = false, existing = false, 
     './local-project.js': { getLocalProject: async () => ({ type: 'local' }) },
     './project-store.js': { registerProject: async (project) => { registered = true; return project } },
   })
-  return { events, removed, writes, archive, run: () => downloadAndRegisterProject('/parent', 'instance', (event) => events.push(event)),
+  return { events, removed, writes, archive, requests, run: (releaseTag) => downloadAndRegisterProject('/parent', 'instance', (event) => events.push(event), releaseTag),
     registered: () => registered, fetched: () => fetched }
 }
 
@@ -331,4 +332,158 @@ test('release page timeout aborts the pending request', async () => {
   await assert.rejects(pending, /RELEASE_LOOKUP_FAILED/)
   assert.equal(aborted, true)
   assert.equal(cleared, true)
+})
+test('selected release downloads its encoded tag without resolving latest', async () => {
+  const fixture = downloadFixture()
+  await fixture.run('v3/preview')
+  assert.deepEqual(fixture.requests, ['https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/v3%2Fpreview.zip'])
+  assert.equal(fixture.registered(), true)
+  assert.deepEqual([...new Set(fixture.events.map(({ stage }) => stage))], ['directory', 'release', 'download', 'extract', 'register'])
+})
+
+test('selected release failure never falls back to a different version', async () => {
+  const fixture = downloadFixture({ failFetch: true })
+  await assert.rejects(fixture.run('v0.1'), /DOWNLOAD_FAILED/)
+  assert.deepEqual(fixture.requests, ['https://github.com/KiraAI-Dev/KiraAI/archive/refs/tags/v0.1.zip'])
+  assert.equal(fixture.registered(), false)
+  assert.deepEqual(fixture.removed, ['/parent/staging'])
+})
+
+test('existing directory cannot silently replace the selected release with an old instance', async () => {
+  const fixture = downloadFixture({ existing: true })
+  await assert.rejects(fixture.run('v2'), /DOWNLOAD_DIRECTORY_EXISTS/)
+  assert.equal(fixture.registered(), false)
+  assert.equal(fixture.fetched(), false)
+  assert.deepEqual(fixture.removed, [])
+})
+
+test('invalid release selections fail before filesystem or network work', async () => {
+  for (const tag of [null, 2, {}, '', ' ', 'v1\n', 'v1\0', 'x'.repeat(257)]) {
+    const fixture = downloadFixture()
+    await assert.rejects(fixture.run(tag), /DOWNLOAD_INPUT_INVALID/)
+    assert.equal(fixture.fetched(), false)
+    assert.deepEqual(fixture.events, [])
+  }
+})
+
+function releaseListFixture(response) {
+  const requests = []
+  const { listProjectReleases } = loadSource('electron/project-download.ts', {}, {
+    fetchWithTimeout: async (url) => {
+      requests.push(url)
+      if (response instanceof Error) throw response
+      return response
+    },
+  }, ['listProjectReleases', 'downloadError'])
+  return { run: listProjectReleases, requests }
+}
+
+test('release list filters drafts and invalid entries, deduplicates tags and retains prereleases', async () => {
+  const fixture = releaseListFixture(Response.json([
+    { tag_name: 'v2', prerelease: false }, { tag_name: 'v3/rc', prerelease: true },
+    { tag_name: 'v4', draft: true }, { tag_name: 'v2' }, null, {}, { tag_name: ' ' },
+  ], { headers: { link: '<https://api.github.com/repos/KiraAI-Dev/KiraAI/releases?page=2>; rel="next"' } }))
+  const result = await fixture.run()
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [{ tag: 'v2', prerelease: false }, { tag: 'v3/rc', prerelease: true }])
+  assert.deepEqual(fixture.requests, ['https://api.github.com/repos/KiraAI-Dev/KiraAI/releases?per_page=50'])
+})
+
+test('release list is capped at 50 versions without following pagination links', async () => {
+  const fixture = releaseListFixture(Response.json(
+    Array.from({ length: 60 }, (_, index) => ({ tag_name: `v${60 - index}` })),
+    { headers: { link: '<https://api.github.com/repos/KiraAI-Dev/KiraAI/releases?page=2>; rel="next"' } },
+  ))
+  const result = await fixture.run()
+  assert.equal(result.length, 50)
+  assert.equal(result[0].tag, 'v60')
+  assert.equal(result.at(-1).tag, 'v11')
+  assert.equal(fixture.requests.length, 1)
+  assert.equal((await releaseListFixture(Response.json([])).run()).length, 0)
+})
+
+test('release list distinguishes rate limits from malformed responses and network failures', async () => {
+  for (const response of [
+    new Response('', { status: 429 }),
+    new Response('', { status: 403, headers: { 'x-ratelimit-remaining': '0' } }),
+    new Response('', { status: 403, headers: { 'retry-after': '60' } }),
+  ]) await assert.rejects(releaseListFixture(response).run(), /RELEASE_LIST_RATE_LIMITED/)
+  for (const response of [new Error('network'), new Response('', { status: 403 }), Response.json({}), new Response('invalid')]) {
+    await assert.rejects(releaseListFixture(response).run(), /RELEASE_LIST_FAILED/)
+  }
+})
+
+function rendererReleasesFixture(releases) {
+  const state = {
+    releasesLoading: { value: false }, releasesError: { value: '' }, releasesLoaded: { value: false },
+    projectReleases: { value: [] }, downloadReleaseTag: { value: 'v2' },
+    actionInProgress: { value: false }, operationProgress: { value: null }, projectCreationMode: { value: null },
+    projectError: { value: '' }, selectedLocalProject: { value: null }, downloadDirectory: { value: '' },
+    cloudProjectName: { value: '' }, cloudProjectUrl: { value: '' }, cloudAccessToken: { value: '' },
+    showNewProjectModal: { value: false },
+  }
+  const functions = loadSource('src/App.vue', {}, {
+    ...state, releasesRequestId: 0,
+    requireLauncherBridge: () => ({ projects: { releases } }), getErrorMessage: (error) => error.message,
+  }, ['loadProjectReleases', 'openNewProjectModal'])
+  return { ...state, ...functions }
+}
+
+test('renderer can retry loading versions without changing the selected tag', async () => {
+  let requests = 0
+  const fixture = rendererReleasesFixture(async () => {
+    if (++requests === 1) throw new Error('RELEASE_LIST_FAILED')
+    return [{ tag: 'v2' }, { tag: 'v1' }]
+  })
+  await fixture.loadProjectReleases()
+  assert.equal(fixture.releasesError.value, 'RELEASE_LIST_FAILED')
+  assert.equal(fixture.releasesLoaded.value, false)
+  await fixture.loadProjectReleases()
+  assert.equal(requests, 2)
+  assert.deepEqual(fixture.projectReleases.value.map(({ tag }) => tag), ['v2', 'v1'])
+  assert.equal(fixture.downloadReleaseTag.value, 'v2')
+  assert.equal(fixture.releasesLoaded.value, true)
+  assert.equal(fixture.releasesLoading.value, false)
+  assert.equal(fixture.releasesError.value, '')
+})
+
+test('reopening creation resets the selected version and ignores stale release results', async () => {
+  let resolveFirst, resolveSecond
+  let count = 0
+  const fixture = rendererReleasesFixture(() => new Promise((resolve) => {
+    if (++count === 1) resolveFirst = resolve
+    else resolveSecond = resolve
+  }))
+  const first = fixture.loadProjectReleases()
+  await fixture.loadProjectReleases()
+  assert.equal(count, 1)
+  fixture.openNewProjectModal()
+  assert.equal(fixture.downloadReleaseTag.value, '')
+  const second = fixture.loadProjectReleases()
+  resolveFirst([{ tag: 'stale' }])
+  await first
+  assert.equal(fixture.projectReleases.value.length, 0)
+  assert.equal(fixture.releasesLoading.value, true)
+  resolveSecond([{ tag: 'v3' }])
+  await second
+  assert.deepEqual(Array.from(fixture.projectReleases.value, ({ tag }) => tag), ['v3'])
+  assert.equal(fixture.releasesLoading.value, false)
+})
+
+test('renderer passes the selected release or the latest default into the download request', async () => {
+  const requests = []
+  const downloadReleaseTag = { value: 'v1.2' }, actionInProgress = { value: false }
+  const { downloadProject } = loadSource('src/App.vue', {}, {
+    downloadReleaseTag, actionInProgress, downloadDirectory: { value: '/parent' },
+    downloadProjectName: { value: ' instance ' }, projectError: { value: '' },
+    trackProjectOperation: async (_operation, action) => action('request'),
+    requireLauncherBridge: () => ({ projects: { download: async (value) => { requests.push(value); return {} } } }),
+    upsertManagedProject: () => {}, getErrorMessage: (error) => error.message,
+  }, ['downloadProject'])
+  await downloadProject()
+  downloadReleaseTag.value = ''
+  await downloadProject()
+  assert.equal(requests[0].releaseTag, 'v1.2')
+  assert.equal(requests[0].name, 'instance')
+  assert.equal(requests[1].releaseTag, undefined)
+  assert.equal(actionInProgress.value, false)
 })
