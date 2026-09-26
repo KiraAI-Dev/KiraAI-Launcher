@@ -59,6 +59,7 @@ interface LauncherUpdateCheck {
 
 interface LauncherLog {
   content: string
+  entries?: Array<{ level: string; content: string }>
 }
 
 interface Window {
@@ -98,7 +99,7 @@ interface Window {
       install: (value: { name: EnvironmentTool['name']; version: string }) => Promise<EnvironmentTool>
     }
     logs: {
-      read: () => Promise<LauncherLog>
+      read: (projectId?: string) => Promise<LauncherLog>
     }
   }
 }

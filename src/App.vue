@@ -25,7 +25,10 @@ const startedProjectIds = ref<string[]>([])
 const runtimeNow = ref(Date.now())
 const launcherVersion = ref('—')
 const environmentTools = ref<EnvironmentTool[]>([])
-const launcherLog = ref<LauncherLog>({ content: '' })
+const logOutput = ref<HTMLElement | null>(null)
+const selectedLogSource = ref('launcher')
+let logRequestId = 0
+const currentLog = ref<LauncherLog>({ content: '' })
 const selectedLogLevel = ref<LogLevelFilter>('ALL')
 const logsLoading = ref(false)
 const logsError = ref('')
@@ -139,9 +142,19 @@ const logLevelOptions = computed<Array<{ label: string; value: LogLevelFilter }>
   { label: t.value.warningLogLevel, value: 'WARN' },
   { label: t.value.errorLogLevel, value: 'ERROR' },
 ])
-const filteredLauncherLog = computed(() => {
-  if (selectedLogLevel.value === 'ALL') return launcherLog.value.content
-  return launcherLog.value.content
+const logSourceOptions = computed(() => [
+  { label: t.value.launcherLogSource, value: 'launcher' },
+  ...managedProjects.value.map((project) => ({
+    label: `${project.name} (${project.type === 'local' ? t.value.localType : t.value.cloudType})`,
+    value: project.id,
+  })),
+])
+const filteredLog = computed(() => {
+  if (selectedLogLevel.value !== 'ALL' && currentLog.value.entries) {
+    return currentLog.value.entries.filter((entry) => entry.level === selectedLogLevel.value).map((entry) => entry.content).join('\n')
+  }
+  if (selectedLogLevel.value === 'ALL') return currentLog.value.content
+  return currentLog.value.content
     .split('\n')
     .filter((line) => /^\[[^\]]+\] \[(INFO|WARN|ERROR)\] /.exec(line)?.[1] === selectedLogLevel.value)
     .join('\n')
@@ -207,6 +220,9 @@ function getErrorMessage(error: unknown) {
   const code = error.message.match(/(?:^|:\s)([A-Z][A-Z0-9_]+)$/)?.[1] ?? error.message
   if (code in environmentActionsText.value.errors) return environmentActionsText.value.errors[code as keyof typeof environmentActionsText.value.errors]
   if (code === "BRIDGE_UNAVAILABLE") return bridgeUnavailableMessage.value
+  if (code === 'LOG_READ_FAILED') return t.value.logsReadFailed
+  if (code === 'INSTANCE_LOG_READ_FAILED') return t.value.instanceLogsReadFailed
+  if (code === 'INSTANCE_LOG_AUTH_REQUIRED') return t.value.instanceLogsAuthRequired
   if (code === 'LOCAL_PORT_UNAVAILABLE') return localPortUnavailableMessage.value
   if (code === 'PROJECT_LAUNCH_ARGUMENTS_INVALID') return projectAdvancedSettingsText.value.launchArgsInvalid
   if (code === 'PROJECT_ENVIRONMENT_VARIABLES_INVALID') return projectAdvancedSettingsText.value.environmentVariablesInvalid
@@ -306,15 +322,19 @@ async function refreshEnvironment() {
   }
 }
 
-async function refreshLauncherLog() {
+async function refreshLogs() {
+  const requestId = ++logRequestId
+  const source = selectedLogSource.value
   logsLoading.value = true
   logsError.value = ''
+  currentLog.value = { content: '' }
   try {
-    launcherLog.value = await requireLauncherBridge().logs.read()
+    const result = await requireLauncherBridge().logs.read(source === 'launcher' ? undefined : source)
+    if (requestId === logRequestId && source === selectedLogSource.value) currentLog.value = result
   } catch (error) {
-    logsError.value = error instanceof Error && error.message === 'LOG_READ_FAILED' ? t.value.logsReadFailed : getErrorMessage(error)
+    if (requestId === logRequestId && source === selectedLogSource.value) logsError.value = getErrorMessage(error)
   } finally {
-    logsLoading.value = false
+    if (requestId === logRequestId) logsLoading.value = false
   }
 }
 
@@ -648,8 +668,23 @@ watch([themeMode, themeColor, language, webuiOpenMode, closeAction, closeReminde
   })
 })
 
+watch([filteredLog, logOutput], () => {
+  const output = logOutput.value
+  if (output) output.scrollTop = output.scrollHeight
+}, { flush: 'post' })
+
+watch(selectedLogSource, () => {
+  currentLog.value = { content: '' }
+  logsError.value = ''
+  if (activeView.value === 'logs') void refreshLogs()
+})
+
+watch(logSourceOptions, (options) => {
+  if (!options.some((option) => option.value === selectedLogSource.value)) selectedLogSource.value = 'launcher'
+})
+
 watch(activeView, (view) => {
-  if (view === 'logs') void refreshLauncherLog()
+  if (view === 'logs') void refreshLogs()
 })
 
 let runtimeTimer: number | undefined
@@ -695,7 +730,7 @@ onBeforeUnmount(() => {
         <div class="sider-bottom"><n-menu v-model:value="activeView" :options="settingsMenu" /></div>
       </n-layout-sider>
       <n-layout native-scrollbar class="right-layout">
-        <n-layout-content :native-scrollbar="false" class="right-content" content-style="padding: 32px 38px;">
+        <n-layout-content :native-scrollbar="activeView === 'logs'" class="right-content" content-style="padding: 32px 38px;">
           <template v-if="activeView === 'overview'"><n-space vertical :size="28">
             <div class="page-heading"><div><h1>{{ t.welcome }}</h1><p>{{ t.overviewSub }}</p></div><n-space><n-button @click="activeView = 'projects'"><template #icon><n-icon :component="FolderOpenOutline" /></template>{{ t.openProject }}</n-button><n-button type="primary" @click="openNewProjectModal"><template #icon><n-icon :component="AddOutline" /></template>{{ t.newProject }}</n-button></n-space></div>
             <n-grid :cols="4" :x-gap="16" :y-gap="16" responsive="screen" item-responsive>
@@ -711,7 +746,7 @@ onBeforeUnmount(() => {
           </n-space></template>
           <template v-else-if="activeView === 'projects'"><n-space vertical :size="24"><div class="page-heading"><div><h1>{{ t.projects }}</h1><p>{{ t.manageProjects }}</p></div><n-space><n-button :loading="projectsRefreshing" @click="refreshProjectRuntime"><template #icon><n-icon :component="RefreshOutline" /></template>{{ t.refresh }}</n-button><n-button type="primary" @click="openNewProjectModal"><template #icon><n-icon :component="AddOutline" /></template>{{ t.newProject }}</n-button></n-space></div><n-alert v-if="projectError" type="error" :title="t.operationFailed" closable @close="projectError = ''">{{ projectError }}</n-alert><n-card><n-empty v-if="!managedProjects.length" :description="t.noManagedProjects"><template #extra><n-text depth="3">{{ t.noManagedProjectsSub }}</n-text></template><n-button type="primary" @click="openNewProjectModal">{{ t.newProject }}</n-button></n-empty><n-data-table v-else :columns="managedProjectColumns" :data="managedProjects" :bordered="false" :single-line="false" :scroll-x="1000" /></n-card></n-space></template>
           <template v-else-if="activeView === 'environment'"><n-space vertical :size="24" class="environment-page"><div class="page-heading"><div><h1>{{ t.environment }}</h1><p>{{ t.environmentSub }}</p></div><n-button :loading="environmentChecking" :disabled="environmentInstalling !== null" @click="refreshEnvironment">{{ environmentChecking ? t.checking : t.refresh }}</n-button></div><n-alert v-if="environmentError" type="error" :title="t.operationFailed" closable @close="environmentError = ''">{{ environmentError }}</n-alert><n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen" item-responsive><n-grid-item v-for="tool in environmentTools" :key="tool.name" span="3 m:1"><n-card size="small" class="environment-card"><n-space vertical :size="16"><n-space justify="space-between" align="center"><n-space align="center"><n-icon :component="tool.name === 'Python' ? CodeSlashOutline : tool.name === 'uv' ? CubeOutline : HardwareChipOutline" :color="activePalette.primary" size="24" /><strong>{{ tool.name }}</strong></n-space><n-tag :type="tool.installed ? 'success' : 'error'" size="small" :bordered="false">{{ tool.installed ? t.installed : t.notInstalled }}</n-tag></n-space><n-text depth="3">{{ tool.version || '—' }}</n-text><div class="environment-path"><span>{{ t.environmentPath }}</span><code>{{ tool.path || '—' }}</code></div><div class="environment-actions"><n-select v-model:value="environmentSelectedVersions[tool.name]" :options="environmentVersionOptions(tool)" :disabled="tool.installed || environmentChecking || environmentInstalling !== null" size="small" /><n-button type="primary" size="small" :loading="isEnvironmentInstalling(tool)" :disabled="tool.installed || environmentChecking || environmentInstalling !== null" @click="installEnvironmentTool(tool)">{{ tool.installed ? t.installed : environmentActionsText.install }}</n-button></div></n-space></n-card></n-grid-item></n-grid></n-space></template>
-          <template v-else-if="activeView === 'logs'"><n-space vertical :size="24" class="logs-page"><div class="page-heading"><div><h1>{{ t.logs }}</h1><p>{{ t.logsSub }}</p><div class="log-level-field"><span class="log-level-label">{{ t.logLevel }}</span><n-select v-model:value="selectedLogLevel" class="log-level-select" :options="logLevelOptions" :aria-label="t.logLevel" /></div></div><n-button :loading="logsLoading" @click="refreshLauncherLog"><template #icon><n-icon :component="RefreshOutline" /></template>{{ t.refreshLogs }}</n-button></div><n-alert v-if="logsError" type="error" :title="t.operationFailed" closable @close="logsError = ''">{{ logsError }}</n-alert><div v-if="!filteredLauncherLog" class="log-empty"><n-empty :description="t.noLogs" size="small" /></div><pre v-else class="log-output" tabindex="0" :aria-label="t.logs">{{ filteredLauncherLog }}</pre></n-space></template>
+          <template v-else-if="activeView === 'logs'"><div class="logs-page"><div class="page-heading"><div><h1>{{ t.logs }}</h1><p>{{ t.logsSub }}</p><div class="log-level-field"><span class="log-level-label">{{ t.logLevel }}</span><n-select v-model:value="selectedLogLevel" class="log-level-select" :options="logLevelOptions" :aria-label="t.logLevel" /><span class="log-level-label">{{ t.logSource }}</span><n-select v-model:value="selectedLogSource" class="log-source-select" :options="logSourceOptions" :aria-label="t.logSource" /></div></div><n-button :loading="logsLoading" @click="refreshLogs"><template #icon><n-icon :component="RefreshOutline" /></template>{{ t.refreshLogs }}</n-button></div><n-alert v-if="logsError" type="error" :title="t.operationFailed" closable @close="logsError = ''">{{ logsError }}</n-alert><div v-if="!filteredLog" class="log-empty"><n-empty :description="t.noLogs" size="small" /></div><pre v-else ref="logOutput" class="log-output" tabindex="0" :aria-label="t.logs">{{ filteredLog }}</pre></div></template>
           <template v-else-if="activeView === 'settings'"><n-space vertical :size="30" class="settings-page"><div class="page-heading"><div><h1>{{ t.settings }}</h1><p>{{ t.settingsSub }}</p></div></div>
             <section><h2 class="settings-section-title">{{ t.appearance }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="isDark ? MoonOutline : SunnyOutline" size="22" /><div><h3>{{ t.theme }}</h3><p>{{ t.themeSub }}</p></div></div><n-select v-model:value="themeMode" :options="themeOptions" style="width: 190px" /></div><n-text depth="3" class="setting-hint">{{ t.themeHint }}</n-text></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><span class="palette-dot" :style="{ backgroundColor: activePalette.primary }"></span><div><h3>{{ t.themeColor }}</h3><p>{{ t.themeColorSub }}</p></div></div><n-select v-model:value="themeColor" :options="colorOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="LanguageOutline" size="22" /><div><h3>{{ t.language }}</h3><p>{{ t.languageSub }}</p></div></div><n-select v-model:value="language" :options="languageOptions" style="width: 190px" /></div><n-text depth="3" class="setting-hint">{{ t.languageHint }}</n-text></n-card></n-space></section>
             <section><h2 class="settings-section-title">{{ t.behavior }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.webuiOpenMode }}</h3><p>{{ t.webuiOpenModeSub }}</p></div></div><n-select v-model:value="webuiOpenMode" :options="webuiOpenModeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeWhen }}</h3><p>{{ t.closeWhenSub }}</p></div></div><n-select v-model:value="closeAction" :options="closeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeReminder }}</h3><p>{{ t.closeReminderSub }}</p></div></div><n-switch v-model:value="closeReminder" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoUpdate }}</h3><p>{{ t.autoUpdateSub }}</p></div></div><n-switch v-model:value="autoUpdate" /></div></n-card></n-space></section>

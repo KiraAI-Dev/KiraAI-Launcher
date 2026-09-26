@@ -82,6 +82,7 @@ export type LauncherUpdateCheck = {
 
 export type LauncherLog = {
   content: string
+  entries?: Array<{ level: string; content: string }>
 }
 
 export type LauncherSettings = {
