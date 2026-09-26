@@ -57,10 +57,7 @@ interface LauncherUpdateCheck {
   releaseNotes: string
 }
 
-interface LauncherLog {
-  content: string
-  entries?: Array<{ level: string; content: string }>
-}
+type LauncherLog = import('../electron/types').LauncherLog
 
 interface Window {
   kiraLauncher?: {

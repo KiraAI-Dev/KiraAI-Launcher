@@ -51,7 +51,11 @@ export async function readProjectLog(id: unknown): Promise<LauncherLog> {
         || !('name' in entry) || typeof entry.name !== 'string'
         || !('message' in entry) || typeof entry.message !== 'string') throw new Error('INSTANCE_LOG_READ_FAILED')
       const level = entry.level === 'WARNING' ? 'WARN' : entry.level === 'CRITICAL' ? 'ERROR' : entry.level
-      return { level, content: `[${entry.time}] [${entry.level}] [${entry.name}] ${entry.message}` }
+      return {
+        level, content: `[${entry.time}] [${entry.level}] [${entry.name}] ${entry.message}`,
+        time: entry.time, displayLevel: entry.level, name: entry.name, message: entry.message,
+        color: 'color' in entry && typeof entry.color === 'string' ? entry.color : undefined,
+      }
     })
     return { content: entries.map((entry) => entry.content).join('\n'), entries }
   } catch (error) {

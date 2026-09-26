@@ -52,7 +52,7 @@ function logFixture({ type = 'cloud', sessionToken = 'session', status = 200, bo
 
 test('cloud and local logs use their own endpoint and credentials', async () => {
   for (const type of ['local', 'cloud']) {
-    const fixture = logFixture({ type, body: { logs: [{ time: '12:00', level: 'WARNING', name: 'test', message: 'warning\ndetail' }, { time: '12:01', level: 'CRITICAL', name: 'test', message: 'failure' }] } })
+    const fixture = logFixture({ type, body: { logs: [{ time: '12:00', level: 'WARNING', name: 'test', message: 'warning\ndetail', color: 'cyan' }, { time: '12:01', level: 'CRITICAL', name: 'test', message: 'failure' }] } })
     const log = await fixture.read('instance')
     const base = type === 'local' ? 'http://127.0.0.1:6000' : 'https://instance.test/prefix'
     assert.equal(fixture.calls[0].login, base)
@@ -61,6 +61,9 @@ test('cloud and local logs use their own endpoint and credentials', async () => 
     assert.equal(fixture.calls[1].init.headers.Authorization, 'Bearer session')
     assert.equal(fixture.calls[1].init.redirect, 'error')
     assert.equal(log.entries[0].level, 'WARN')
+    assert.equal(log.entries[0].color, 'cyan')
+    assert.equal(log.entries[0].displayLevel, 'WARNING')
+    assert.equal(log.entries[0].message, 'warning\ndetail')
     assert.equal(log.entries[1].level, 'ERROR')
     assert.match(log.entries[0].content, /warning\ndetail/)
     assert.equal(log.content, log.entries.map((entry) => entry.content).join('\n'))
@@ -139,13 +142,14 @@ test('failed refresh removes stale content and displays the error', async () => 
 test('log filtering preserves instance stack traces and launcher filtering', () => {
   const source = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8').split('<script setup lang="ts">')[1].split('</script>')[0]
   const ast = ts.createSourceFile('App.ts', source, ts.ScriptTarget.Latest, true)
-  const statement = ast.statements.find((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => declaration.name.getText(ast) === 'filteredLog'))
-  const state = { selectedLogLevel: { value: 'ERROR' }, currentLog: { value: { content: 'all', entries: [{ level: 'ERROR', content: 'failure\nstack trace' }, { level: 'INFO', content: 'info' }] } }, computed: (fn) => ({ get value() { return fn() } }) }
-  const code = ts.transpileModule(statement.getText(ast) + '\nresult = filteredLog', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+  const statements = ast.statements.filter((node) => ts.isVariableStatement(node) && node.declarationList.declarations.some((declaration) => ['filteredLogEntries', 'filteredLog'].includes(declaration.name.getText(ast))))
+  const { getLogEntries } = loadSource('src/components/log-format.ts')
+  const state = { getLogEntries, selectedLogLevel: { value: 'ERROR' }, currentLog: { value: { content: 'all', entries: [{ level: 'ERROR', content: 'failure\nstack trace' }, { level: 'INFO', content: 'info' }] } }, computed: (fn) => ({ get value() { return fn() } }) }
+  const code = ts.transpileModule(statements.map((statement) => statement.getText(ast)).join('\n') + '\nresult = filteredLog', { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
   vm.runInNewContext(code, state)
   assert.equal(state.result.value, 'failure\nstack trace')
   state.selectedLogLevel.value = 'ALL'
-  assert.equal(state.result.value, 'all')
+  assert.equal(state.result.value, 'failure\nstack trace\ninfo')
   state.currentLog.value = { content: '[time] [INFO] info\n[time] [WARN] warning' }
   state.selectedLogLevel.value = 'WARN'
   assert.equal(state.result.value, '[time] [WARN] warning')
@@ -157,4 +161,18 @@ test('all locales have matching keys and placeholders', () => {
     return Object.entries(value).flatMap(([key, text]) => typeof text === 'object' ? flatten(text, prefix + key + '.') : [[prefix + key, [...text.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]).sort()]])
   }
   assert.deepEqual(flatten(messages['zh-CN']), flatten(messages['en-US']))
+})
+
+test('color formatting retains structured messages and safely maps known colors', () => {
+  const { getLogEntries, logColor } = loadSource('src/components/log-format.ts')
+  const entries = [{ level: 'ERROR', content: 'formatted', time: 'now', name: 'module', message: '<script>example</script>\ntrace', color: 'red' }]
+  assert.equal(getLogEntries({ content: 'formatted', entries }), entries)
+  const [entry] = getLogEntries({ content: '[time] [ERROR] <img src=x onerror=alert(1)>' })
+  assert.equal(entry.message, '<img src=x onerror=alert(1)>')
+  assert.equal(entry.level, 'ERROR')
+  assert.equal(logColor('bold_light_blue'), 'var(--log-blue)')
+  assert.equal(logColor('cyan'), 'var(--log-cyan)')
+  assert.equal(logColor('white'), 'var(--log-neutral)')
+  for (const color of [undefined, 'unknown', '__proto__', 'constructor', 'red; background: url(example)']) assert.equal(logColor(color), undefined)
+  assert.equal(getLogEntries({ content: 'unstructured text' })[0].content, 'unstructured text')
 })
