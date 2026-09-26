@@ -30,14 +30,25 @@ html, body, #app { width: 100%; min-width: 960px; height: 100vh; margin: 0; over
 .placeholder { min-height: calc(100vh - 180px); display: grid; place-items: center; }
 .settings-page { max-width: 980px; }
 .environment-page { max-width: 980px; }
-.logs-page { max-width: 1100px; }
-.log-level-field { display: flex; align-items: center; gap: 10px; margin-top: 16px; }
+.logs-page { display: flex; flex-direction: column; gap: 24px; height: 100%; min-height: 0; }
+.logs-page > .page-heading, .logs-page > .n-alert { flex: none; }
+.log-level-field { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 16px; }
 .log-level-label { flex: none; color: var(--n-text-color-2); font-size: 14px; }
 .log-level-select { width: 150px; }
-.log-output, .log-empty { height: calc(100vh - 315px); min-height: 260px; max-height: 620px; border: 1px solid #e0e0e6; border-radius: 8px; background: #fafafc; }
+.log-source-select { width: 260px; }
+.log-output, .log-empty { flex: 1 1 0; min-height: 0; border: 1px solid #e0e0e6; border-radius: 8px; background: #fafafc; }
 .log-empty { display: grid; place-items: center; }
 .log-output { margin: 0; padding: 16px; overflow: auto; color: var(--n-text-color-2); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; }
 .dark-app .log-output, .dark-app .log-empty { border-color: rgba(255, 255, 255, .09); background: #18181c; }
+.log-output { --log-neutral: #34343c; --log-muted: #697180; --log-red: #c62828; --log-green: #237638; --log-yellow: #8a6200; --log-orange: #ad5100; --log-blue: #2369b5; --log-cyan: #087b86; --log-magenta: #9140a1; }
+.dark-app .log-output { --log-neutral: #dedee5; --log-muted: #a0a7b4; --log-red: #ff8585; --log-green: #7bd88f; --log-yellow: #ebcc70; --log-orange: #ffb267; --log-blue: #82baff; --log-cyan: #6bd7e0; --log-magenta: #d5a0ef; }
+.log-time { color: var(--log-muted); }
+.log-level, .log-name { font-weight: 600; }
+.log-name { color: var(--log-blue); }
+.log-level-debug { color: var(--log-cyan); }
+.log-level-info { color: var(--log-green); }
+.log-level-warn { color: var(--log-yellow); }
+.log-level-error { color: var(--log-red); }
 .about-page { min-height: calc(100vh - 180px); display: grid; place-items: center; }
 .about-card { width: min(640px, 100%); padding: 26px 14px; text-align: center; }
 .about-icon { width: 92px; height: 92px; border-radius: 20px; box-shadow: 0 10px 26px rgba(32, 128, 240, .24); }

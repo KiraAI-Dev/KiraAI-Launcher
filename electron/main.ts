@@ -9,6 +9,7 @@ import type { AppUpdater } from 'electron-updater'
 import { decryptAccessToken, encryptAccessToken, getInstanceRuntimeDuration, getInstanceVersion, getLocalAccessToken, getWebuiSessionToken, readJson, requestWithTimeout, verifyCloudProject } from './cloud.js'
 import { checkEnvironment, installEnvironmentTool } from './environment.js'
 import { getLocalProject, getLocalWebuiUrl, normalizeLocalWebuiHost, saveLocalWebuiSettings } from './local-project.js'
+import { readProjectLog } from './project-logs.js'
 import { initializeLauncherLog, readLauncherLog, writeLauncherLog } from './logger.js'
 import { downloadAndRegisterProject as downloadProject } from './project-download.js'
 import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
@@ -942,7 +943,7 @@ app.whenReady().then(async () => {
       throw error
     }
   })
-  ipcMain.handle('logs:read', readLauncherLog)
+  ipcMain.handle('logs:read', (_event, projectId: unknown) => projectId === undefined ? readLauncherLog() : readProjectLog(projectId))
   createTray()
   createWindow()
   if (currentSettings.autoUpdate && canUseAutoUpdater()) void checkLauncherUpdate().catch(() => undefined)

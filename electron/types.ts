@@ -80,8 +80,19 @@ export type LauncherUpdateCheck = {
   releaseNotes: string
 }
 
+export type LogEntry = {
+  level: string
+  content: string
+  time?: string
+  displayLevel?: string
+  name?: string
+  message?: string
+  color?: string
+}
+
 export type LauncherLog = {
   content: string
+  entries?: LogEntry[]
 }
 
 export type LauncherSettings = {

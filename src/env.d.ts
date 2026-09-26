@@ -57,9 +57,7 @@ interface LauncherUpdateCheck {
   releaseNotes: string
 }
 
-interface LauncherLog {
-  content: string
-}
+type LauncherLog = import('../electron/types').LauncherLog
 
 interface Window {
   kiraLauncher?: {
@@ -98,7 +96,7 @@ interface Window {
       install: (value: { name: EnvironmentTool['name']; version: string }) => Promise<EnvironmentTool>
     }
     logs: {
-      read: () => Promise<LauncherLog>
+      read: (projectId?: string) => Promise<LauncherLog>
     }
   }
 }
