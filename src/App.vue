@@ -3,7 +3,9 @@ import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } 
 import { darkTheme, enUS, NButton, NDialogProvider, NIcon, NMessageProvider, NTag, useDialog, useMessage, zhCN } from 'naive-ui'
 import type { DataTableColumns, MenuOption } from 'naive-ui'
 import LauncherReleaseNotes from './components/LauncherReleaseNotes.vue'
-import { messages, projectAdvancedSettingsMessages, type Language } from './i18n/messages'
+import ProjectOperationProgress from './components/ProjectOperationProgress.vue'
+import { projectOperationSteps, type ProjectOperation } from '../electron/types'
+import { messages, projectAdvancedSettingsMessages, projectProgressMessages, type Language } from './i18n/messages'
 import { AddOutline, CloudOutline, CloudUploadOutline, CodeSlashOutline, CubeOutline, DocumentTextOutline, DownloadOutline, FolderOpenOutline, HardwareChipOutline, HomeOutline, InformationCircleOutline, LanguageOutline, LayersOutline, MoonOutline, OpenOutline, PlayOutline, RefreshOutline, RocketOutline, SettingsOutline, StopOutline, SunnyOutline, TrashOutline } from '@vicons/ionicons5'
 
 type ViewKey = 'overview' | 'projects' | 'deployments' | 'environment' | 'logs' | 'settings' | 'about'
@@ -30,6 +32,13 @@ const logsError = ref('')
 const showNewProjectModal = ref(false)
 const projectCreationMode = ref<ProjectCreationMode>(null)
 const selectedLocalProject = ref<LocalProjectCandidate | null>(null)
+const operationProgress = ref<ProjectProgress | null>(null)
+const progressOperation = ref<ProjectOperation>('download')
+const progressStatus = ref<'running' | 'success' | 'error'>('running')
+const showDeploymentProgress = ref(false)
+const deploymentProjectName = ref('')
+const progressText = computed(() => projectProgressMessages[language.value])
+let removeProjectProgressListener: (() => void) | undefined
 const downloadDirectory = ref('')
 const downloadProjectName = ref('kira-ai')
 const cloudProjectName = ref('')
@@ -193,16 +202,18 @@ function formatRuntimeDuration(runtimeStartedAt: number | undefined) {
 }
 
 function getErrorMessage(error: unknown) {
-  if (!(error instanceof Error)) return t.value.operationFailed
-  if (error.message in environmentActionsText.value.errors) return environmentActionsText.value.errors[error.message as keyof typeof environmentActionsText.value.errors]
-  if (error.message === "BRIDGE_UNAVAILABLE") return bridgeUnavailableMessage.value
-  if (error.message === 'LOCAL_PORT_UNAVAILABLE') return localPortUnavailableMessage.value
-  if (error.message === 'PROJECT_LAUNCH_ARGUMENTS_INVALID') return projectAdvancedSettingsText.value.launchArgsInvalid
-  if (error.message === 'PROJECT_ENVIRONMENT_VARIABLES_INVALID') return projectAdvancedSettingsText.value.environmentVariablesInvalid
-  if (error.message in projectSettingsErrors.value) return projectSettingsErrors.value[error.message as keyof typeof projectSettingsErrors.value]
-  if (["CLOUD_AUTH_CONFIG_INVALID", "CLOUD_LOGIN_FAILED", "CLOUD_OVERVIEW_UNAVAILABLE", "CLOUD_OVERVIEW_INVALID", "CLOUD_VERSION_UNAVAILABLE", "CLOUD_VERSION_INVALID"].includes(error.message)) return localizedErrors.value.CLOUD_WEBUI_UNAVAILABLE
-  if (!(error.message in localizedErrors.value)) return t.value.operationFailed
-  return localizedErrors.value[error.message as keyof typeof localizedErrors.value]
+  if (typeof error !== 'object' || error === null || !('message' in error) || typeof error.message !== 'string') return t.value.operationFailed
+  // Electron prefixes rejected IPC calls with the remote method name.
+  const code = error.message.match(/(?:^|:\s)([A-Z][A-Z0-9_]+)$/)?.[1] ?? error.message
+  if (code in environmentActionsText.value.errors) return environmentActionsText.value.errors[code as keyof typeof environmentActionsText.value.errors]
+  if (code === "BRIDGE_UNAVAILABLE") return bridgeUnavailableMessage.value
+  if (code === 'LOCAL_PORT_UNAVAILABLE') return localPortUnavailableMessage.value
+  if (code === 'PROJECT_LAUNCH_ARGUMENTS_INVALID') return projectAdvancedSettingsText.value.launchArgsInvalid
+  if (code === 'PROJECT_ENVIRONMENT_VARIABLES_INVALID') return projectAdvancedSettingsText.value.environmentVariablesInvalid
+  if (code in projectSettingsErrors.value) return projectSettingsErrors.value[code as keyof typeof projectSettingsErrors.value]
+  if (["CLOUD_AUTH_CONFIG_INVALID", "CLOUD_LOGIN_FAILED", "CLOUD_OVERVIEW_UNAVAILABLE", "CLOUD_OVERVIEW_INVALID", "CLOUD_VERSION_UNAVAILABLE", "CLOUD_VERSION_INVALID"].includes(code)) return localizedErrors.value.CLOUD_WEBUI_UNAVAILABLE
+  if (!(code in localizedErrors.value)) return t.value.operationFailed
+  return localizedErrors.value[code as keyof typeof localizedErrors.value]
 }
 
 function requireLauncherBridge() {
@@ -331,7 +342,30 @@ async function installEnvironmentTool(tool: EnvironmentTool) {
   }
 }
 
+async function trackProjectOperation<T>(operation: ProjectOperation, action: (requestId: string) => Promise<T>): Promise<T> {
+  const requestId = crypto.randomUUID()
+  progressOperation.value = operation
+  progressStatus.value = 'running'
+  operationProgress.value = { requestId, stage: projectOperationSteps[operation][0] }
+  try {
+    removeProjectProgressListener = requireLauncherBridge().projects.onProgress((progress) => {
+      if (progress.requestId === requestId) operationProgress.value = progress
+    })
+    const result = await action(requestId)
+    progressStatus.value = 'success'
+    return result
+  } catch (error) {
+    progressStatus.value = 'error'
+    throw error
+  } finally {
+    removeProjectProgressListener?.()
+    removeProjectProgressListener = undefined
+  }
+}
+
 function openNewProjectModal() {
+  if (actionInProgress.value) return
+  operationProgress.value = null
   projectCreationMode.value = null
   projectError.value = ''
   selectedLocalProject.value = null
@@ -376,13 +410,12 @@ async function chooseDownloadDirectory() {
 }
 
 async function downloadProject() {
-  if (!downloadDirectory.value || !downloadProjectName.value.trim()) return
+  if (actionInProgress.value || !downloadDirectory.value || !downloadProjectName.value.trim()) return
   actionInProgress.value = true
   projectError.value = ''
   try {
-    const project = await requireLauncherBridge().projects.download({ parentPath: downloadDirectory.value, name: downloadProjectName.value.trim() })
+    const project = await trackProjectOperation('download', (requestId) => requireLauncherBridge().projects.download({ parentPath: downloadDirectory.value, name: downloadProjectName.value.trim(), requestId }))
     upsertManagedProject(project)
-    showNewProjectModal.value = false
   } catch (error) {
     projectError.value = getErrorMessage(error)
   } finally {
@@ -406,11 +439,14 @@ async function connectCloudProject() {
 }
 
 async function startProject(id: string) {
+  if (actionInProgress.value) return
+  deploymentProjectName.value = managedProjects.value.find((project) => project.id === id)?.name ?? ''
+  showDeploymentProgress.value = true
   actionInProgress.value = true
   projectActionId.value = id
   projectError.value = ''
   try {
-    await requireLauncherBridge().projects.start(id)
+    await trackProjectOperation('deploy', (requestId) => requireLauncherBridge().projects.start(id, requestId))
     await refreshManagedProjects()
     messageHost.value?.success(projectActionText.value.started)
   } catch (error) {
@@ -642,6 +678,7 @@ onBeforeUnmount(() => {
   systemThemeQuery.removeEventListener('change', syncSystemTheme)
   if (runtimeTimer) window.clearInterval(runtimeTimer)
   removeUpdateStatusListener?.()
+  removeProjectProgressListener?.()
 })
 </script>
 
@@ -684,11 +721,29 @@ onBeforeUnmount(() => {
         </n-layout-content>
       </n-layout>
       </n-layout>
-      <n-modal v-model:show="showNewProjectModal" preset="card" :title="t.newProjectTitle" class="project-modal" :mask-closable="!actionInProgress">
+      <n-modal v-model:show="showNewProjectModal" preset="card" :title="projectCreationMode === 'download' ? progressText.downloadTitle : t.newProjectTitle" class="project-modal" content-scrollable :mask-closable="!actionInProgress" :closable="!actionInProgress" :close-on-esc="!actionInProgress">
       <n-space v-if="projectCreationMode === null" vertical :size="12"><n-text depth="3">{{ t.chooseProjectMethod }}</n-text><div class="project-source-grid"><button class="project-source-option" type="button" @click="projectCreationMode = 'local'"><n-icon :component="FolderOpenOutline" :color="activePalette.primary" size="26" /><strong>{{ t.localProject }}</strong><span>{{ t.localProjectSub }}</span></button><button class="project-source-option" type="button" @click="projectCreationMode = 'download'"><n-icon :component="DownloadOutline" :color="activePalette.primary" size="26" /><strong>{{ t.downloadProject }}</strong><span>{{ t.downloadProjectSub }}</span></button><button class="project-source-option" type="button" @click="projectCreationMode = 'cloud'"><n-icon :component="CloudOutline" :color="activePalette.primary" size="26" /><strong>{{ t.cloudProject }}</strong><span>{{ t.cloudProjectSub }}</span></button></div></n-space>
       <n-space v-else-if="projectCreationMode === 'local'" vertical :size="18"><div><strong>{{ t.selectLocalProject }}</strong><p class="modal-hint">{{ t.selectLocalHint }}</p></div><n-button block @click="chooseLocalProject"><template #icon><n-icon :component="FolderOpenOutline" /></template>{{ t.selectLocalProject }}</n-button><n-alert v-if="selectedLocalProject" type="success" :show-icon="false">{{ t.selectedDirectory }}：{{ selectedLocalProject.projectPath }}</n-alert><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="actionInProgress" @click="projectCreationMode = null">{{ t.back }}</n-button><n-button type="primary" :disabled="!selectedLocalProject" :loading="actionInProgress" @click="addLocalProject">{{ t.manage }}</n-button></n-space></n-space>
-      <n-space v-else-if="projectCreationMode === 'download'" vertical :size="18"><n-form label-placement="top"><n-form-item :label="t.downloadDirectory"><n-input :value="downloadDirectory" readonly :placeholder="t.chooseDirectory"><template #suffix><n-button text type="primary" @click="chooseDownloadDirectory">{{ t.chooseDirectory }}</n-button></template></n-input></n-form-item><n-form-item :label="t.projectName"><n-input v-model:value="downloadProjectName" :placeholder="t.projectName" /><template #feedback>{{ t.projectNameHint }}</template></n-form-item></n-form><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="actionInProgress" @click="projectCreationMode = null">{{ t.back }}</n-button><n-button type="primary" :disabled="!downloadDirectory || !downloadProjectName.trim()" :loading="actionInProgress" @click="downloadProject">{{ t.downloadAndDeploy }}</n-button></n-space></n-space>
+      <n-space v-else-if="projectCreationMode === 'download'" vertical :size="18">
+        <n-form v-if="!operationProgress || progressStatus === 'error'" label-placement="top" :disabled="actionInProgress">
+          <n-form-item :label="t.downloadDirectory"><n-input :value="downloadDirectory" readonly :placeholder="t.chooseDirectory"><template #suffix><n-button text type="primary" :disabled="actionInProgress" @click="chooseDownloadDirectory">{{ t.chooseDirectory }}</n-button></template></n-input></n-form-item>
+          <n-form-item :label="t.projectName"><n-input v-model:value="downloadProjectName" :placeholder="t.projectName" /><template #feedback>{{ t.projectNameHint }}</template></n-form-item>
+        </n-form>
+        <ProjectOperationProgress v-if="operationProgress && progressOperation === 'download'" operation="download" :progress="operationProgress" :status="progressStatus" :language="language"><template #error>{{ projectError }}</template></ProjectOperationProgress>
+        <n-alert v-else-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert>
+        <n-space justify="end">
+          <n-button v-if="operationProgress && progressStatus === 'success'" type="primary" @click="showNewProjectModal = false">{{ progressText.close }}</n-button>
+          <template v-else>
+            <n-button :disabled="actionInProgress" @click="projectCreationMode = null; operationProgress = null">{{ t.back }}</n-button>
+            <n-button type="primary" :disabled="actionInProgress || !downloadDirectory || !downloadProjectName.trim()" :loading="actionInProgress" @click="downloadProject">{{ t.downloadAndDeploy }}</n-button>
+          </template>
+        </n-space>
+      </n-space>
       <n-space v-else vertical :size="18"><n-form label-placement="top"><n-form-item :label="t.cloudName"><n-input v-model:value="cloudProjectName" :placeholder="t.cloudName" /></n-form-item><n-form-item :label="t.cloudUrl"><n-input v-model:value="cloudProjectUrl" placeholder="https://kira.example.com" /></n-form-item><n-form-item :label="cloudConnectionText.accessToken"><n-input v-model:value="cloudAccessToken" type="password" show-password-on="click" autocomplete="off" /><template #feedback>{{ cloudConnectionText.accessTokenHint }}</template></n-form-item></n-form><p class="modal-hint">{{ t.cloudHint }}</p><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="actionInProgress" @click="projectCreationMode = null">{{ t.back }}</n-button><n-button type="primary" :disabled="!cloudProjectName.trim() || !cloudProjectUrl.trim()" :loading="actionInProgress" @click="connectCloudProject">{{ t.connectInstance }}</n-button></n-space></n-space>
+      </n-modal>
+      <n-modal v-model:show="showDeploymentProgress" preset="card" :title="progressText.deployTitle + ' · ' + deploymentProjectName" class="project-modal" content-scrollable :mask-closable="!actionInProgress" :closable="!actionInProgress" :close-on-esc="!actionInProgress">
+        <ProjectOperationProgress v-if="operationProgress && progressOperation === 'deploy'" operation="deploy" :progress="operationProgress" :status="progressStatus" :language="language"><template #error>{{ projectError }}</template></ProjectOperationProgress>
+        <template #action><n-space justify="end"><n-button :disabled="actionInProgress" @click="showDeploymentProgress = false">{{ progressText.close }}</n-button></n-space></template>
       </n-modal>
       <n-modal v-model:show="showProjectSettingsModal" preset="card" :title="t.projectSettings" class="project-modal project-settings-modal" content-scrollable :mask-closable="!projectSettingsSaving">
         <n-space v-if="editingProject" vertical :size="18"><p class="modal-hint">{{ t.projectSettingsSub }}</p><n-form label-placement="top"><n-form-item :label="t.projectName"><n-input v-model:value="projectSettingsName" :placeholder="t.projectName" /></n-form-item><template v-if="editingProject.type === 'local'"><n-form-item :label="t.webuiHost"><n-input v-model:value="projectSettingsHost" placeholder="0.0.0.0" autocomplete="off" /><template #feedback>{{ t.webuiHostSub }}</template></n-form-item><n-form-item :label="t.webuiPort"><n-input-number v-model:value="projectSettingsPort" :min="1" :max="65535" :show-button="false" style="width: 100%" /><template #feedback>{{ t.webuiPortSub }}</template></n-form-item><n-collapse class="project-advanced-settings"><n-collapse-item :title="projectAdvancedSettingsText.title" name="advanced"><p class="modal-hint">{{ projectAdvancedSettingsText.subtitle }}</p><n-form-item :label="projectAdvancedSettingsText.launchArgs"><n-input v-model:value="projectSettingsLaunchArgs" placeholder="--env dev" /><template #feedback>{{ projectAdvancedSettingsText.launchArgsHint }}</template></n-form-item><n-form-item :label="projectAdvancedSettingsText.environmentVariables"><n-input v-model:value="projectSettingsEnvironmentVariables" type="textarea" :autosize="{ minRows: 3, maxRows: 8 }" /><template #feedback>{{ projectAdvancedSettingsText.environmentVariablesHint }}</template></n-form-item></n-collapse-item></n-collapse></template><template v-else><n-form-item :label="t.cloudUrl"><n-input v-model:value="projectSettingsUrl" placeholder="https://kira.example.com" /><template #feedback>{{ t.cloudUrlSub }}</template></n-form-item><n-form-item class="project-settings-token" :label="cloudConnectionText.accessToken"><n-input v-model:value="projectSettingsAccessToken" type="password" show-password-on="click" autocomplete="off" /><template #feedback>{{ hasSavedCloudAccessToken ? cloudConnectionText.accessTokenSavedHint : cloudConnectionText.accessTokenUpdateHint }}</template></n-form-item></template></n-form><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="projectSettingsSaving" @click="showProjectSettingsModal = false">{{ t.cancel }}</n-button><n-button type="primary" :disabled="!projectSettingsName.trim() || (editingProject.type === 'local' ? !projectSettingsHost.trim() || projectSettingsPort === null : !projectSettingsUrl.trim())" :loading="projectSettingsSaving" @click="saveProjectSettings">{{ t.save }}</n-button></n-space></n-space>

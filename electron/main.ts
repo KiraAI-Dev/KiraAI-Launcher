@@ -13,7 +13,7 @@ import { initializeLauncherLog, readLauncherLog, writeLauncherLog } from './logg
 import { downloadAndRegisterProject as downloadProject } from './project-download.js'
 import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
 import { defaultSettings, loadSettings, saveSettings } from './settings.js'
-import type { CloseAction, LauncherSettings, LauncherUpdateCheck, ManagedProject, OverviewData, StoredProject } from './types.js'
+import type { CloseAction, LauncherSettings, LauncherUpdateCheck, ManagedProject, OverviewData, ProjectProgressReporter, StoredProject } from './types.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const require = createRequire(import.meta.url)
@@ -366,6 +366,21 @@ async function openLauncherReleaseLink(value: unknown): Promise<void> {
   await shell.openExternal(target.toString())
 }
 
+function createProjectProgressReporter(event: Electron.IpcMainInvokeEvent, requestId: unknown): ProjectProgressReporter {
+  if (typeof requestId !== 'string' || !requestId || requestId.length > 128) throw new Error('DOWNLOAD_INPUT_INVALID')
+  let lastStage = ''
+  let lastSentAt = 0
+  return (progress) => {
+    if (event.sender.isDestroyed()) return
+    const now = Date.now()
+    const finished = progress.total !== undefined && progress.completed === progress.total
+    if (progress.stage === lastStage && !finished && now - lastSentAt < 100) return
+    lastStage = progress.stage
+    lastSentAt = now
+    event.sender.send('projects:progress', { ...progress, requestId })
+  }
+}
+
 function runCommand(command: string, args: string[], timeout = 8000): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     execFile(command, args, { windowsHide: true, timeout }, (error, stdout, stderr) => {
@@ -375,7 +390,8 @@ function runCommand(command: string, args: string[], timeout = 8000): Promise<{ 
   })
 }
 
-async function startLocalProject(id: string): Promise<void> {
+async function startLocalProject(id: string, report: ProjectProgressReporter): Promise<void> {
+  report({ stage: 'validate' })
   if (launchedProjects.has(id)) return
   const project = (await loadProjects()).find((item) => item.id === id)
   if (!project || project.type !== 'local' || !project.projectPath) throw new Error('LOCAL_PROJECT_NOT_FOUND')
@@ -384,8 +400,10 @@ async function startLocalProject(id: string): Promise<void> {
   const localTarget = getLocalWebuiUrl(localProject.host, localProject.port ?? 5267)
   await ensureLocalPortAvailable(localProject.port ?? 5267, localProject.host)
   const venvPythonPath = path.join(project.projectPath, 'venv', process.platform === 'win32' ? 'Scripts/python.exe' : 'bin/python')
+  report({ stage: 'packageIndex' })
   const detectedPackageIndex = await selectFastestPackageIndex()
   const packageIndex = detectedPackageIndex ?? DEFAULT_PYTHON_PACKAGE_INDEX_URL
+  report({ stage: 'venv' })
   let useUv = await hasUv()
   try {
     await fs.access(venvPythonPath)
@@ -405,6 +423,7 @@ async function startLocalProject(id: string): Promise<void> {
     }
   }
 
+  report({ stage: 'dependencies' })
   if (useUv) {
     await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '--upgrade', 'pip', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
     await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
@@ -413,6 +432,7 @@ async function startLocalProject(id: string): Promise<void> {
     await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
   }
 
+  report({ stage: 'launch' })
   const child = spawn(venvPythonPath, ['main.py', ...project.launchArgs ?? []], {
     cwd: project.projectPath,
     env: {
@@ -433,6 +453,7 @@ async function startLocalProject(id: string): Promise<void> {
     void writeLauncherLog('ERROR', 'Local project process failed', { project: project.name })
   })
   await waitForSpawn(child)
+  report({ stage: 'health' })
   await waitForLocalWebui(localTarget, child)
   void writeLauncherLog('INFO', 'Local project started', { project: project.name })
 }
@@ -851,11 +872,11 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('projects:download', async (_event, value: unknown) => {
     if (typeof value !== 'object' || value === null) throw new Error('DOWNLOAD_INPUT_INVALID')
-    const { parentPath, name } = value as { parentPath?: unknown; name?: unknown }
+    const { parentPath, name, requestId } = value as { parentPath?: unknown; name?: unknown; requestId?: unknown }
     if (typeof parentPath !== 'string' || typeof name !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/.test(name)) {
       throw new Error('PROJECT_NAME_INVALID')
     }
-    return downloadProject(parentPath, name).then(toManagedProject)
+    return downloadProject(parentPath, name, createProjectProgressReporter(_event, requestId)).then(toManagedProject)
   })
   ipcMain.handle('projects:connect-cloud', async (_event, value: unknown) => {
     if (typeof value !== 'object' || value === null) throw new Error('CLOUD_INPUT_INVALID')
@@ -880,10 +901,10 @@ app.whenReady().then(async () => {
     if (!accessToken) throw new Error('CLOUD_TOKEN_DECRYPT_FAILED')
     return accessToken
   })
-  ipcMain.handle('projects:start', async (_event, id: unknown) => {
+  ipcMain.handle('projects:start', async (_event, id: unknown, requestId: unknown) => {
     if (typeof id !== 'string') throw new Error('PROJECT_ID_INVALID')
     try {
-      return await startLocalProject(id)
+      return await startLocalProject(id, createProjectProgressReporter(_event, requestId))
     } catch (error) {
       void writeLauncherLog('ERROR', 'Failed to start local project', { reason: error instanceof Error ? error.message : 'UNKNOWN' })
       throw error

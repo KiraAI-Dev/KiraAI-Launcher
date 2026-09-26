@@ -10,11 +10,16 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
     chooseLocal: () => ipcRenderer.invoke('projects:choose-local'),
     addLocal: (projectPath: string) => ipcRenderer.invoke('projects:add-local', projectPath),
     chooseDownloadDirectory: () => ipcRenderer.invoke('projects:choose-download-directory'),
-    download: (value: { parentPath: string; name: string }) => ipcRenderer.invoke('projects:download', value),
+    download: (value: { parentPath: string; name: string; requestId: string }) => ipcRenderer.invoke('projects:download', value),
     connectCloud: (value: { name: string; url: string; accessToken?: string }) => ipcRenderer.invoke('projects:connect-cloud', value),
     update: (value: { id: string; name: string; host?: string; port?: number | null; url?: string; accessToken?: string; launchArgs?: string[]; environmentVariables?: Record<string, string> }) => ipcRenderer.invoke('projects:update', value),
     getAccessToken: (id: string) => ipcRenderer.invoke('projects:get-access-token', id),
-    start: (id: string) => ipcRenderer.invoke('projects:start', id),
+    start: (id: string, requestId: string) => ipcRenderer.invoke('projects:start', id, requestId),
+    onProgress: (listener: (progress: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, progress: unknown) => listener(progress)
+      ipcRenderer.on('projects:progress', handler)
+      return () => ipcRenderer.removeListener('projects:progress', handler)
+    },
     stop: (id: string) => ipcRenderer.invoke('projects:stop', id),
     open: (id: string) => ipcRenderer.invoke('projects:open', id),
     openFolder: (id: string) => ipcRenderer.invoke('projects:open-folder', id),
