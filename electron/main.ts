@@ -843,7 +843,8 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
-  Menu.setApplicationMenu(null)
+  // Preserve macOS's default app/Edit menu roles and their keyboard shortcuts.
+  if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
   ipcMain.on('window:minimize', (event) => {
     if (event.sender === mainWindow?.webContents) mainWindow.minimize()
   })
