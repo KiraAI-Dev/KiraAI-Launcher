@@ -94,3 +94,8 @@ export const projectProgressMessages = {
     },
   },
 } as const
+
+export const windowControlsMessages = {
+  'zh-CN': { minimize: '最小化', maximize: '最大化', restore: '还原', close: '关闭' },
+  'en-US': { minimize: 'Minimize', maximize: 'Maximize', restore: 'Restore', close: 'Close' },
+} as const

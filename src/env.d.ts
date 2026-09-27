@@ -61,6 +61,13 @@ type LauncherLog = import('../electron/types').LauncherLog
 
 interface Window {
   kiraLauncher?: {
+    window: {
+      minimize: () => void
+      toggleMaximize: () => void
+      close: () => void
+      isMaximized: () => Promise<boolean>
+      onMaximized: (listener: (maximized: boolean) => void) => () => void
+    }
     settings: {
       load: () => Promise<LauncherSettings>
       save: (settings: LauncherSettings) => Promise<LauncherSettings>
