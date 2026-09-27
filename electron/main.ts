@@ -819,7 +819,7 @@ function createWindow() {
     backgroundColor: '#0b1020',
     icon: applicationIconPath(),
     autoHideMenuBar: true,
-    titleBarStyle: 'hiddenInset',
+    frame: false,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -827,6 +827,9 @@ function createWindow() {
     },
   })
   mainWindow = window
+  const sendWindowState = () => window.webContents.send('window:maximized', window.isMaximized())
+  window.on('maximize', sendWindowState)
+  window.on('unmaximize', sendWindowState)
   window.on('close', (event) => {
     if (isQuitting) return
     event.preventDefault()
@@ -840,6 +843,22 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  // Preserve macOS's default app/Edit menu roles and their keyboard shortcuts.
+  if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
+  ipcMain.on('window:minimize', (event) => {
+    if (event.sender === mainWindow?.webContents) mainWindow.minimize()
+  })
+  ipcMain.on('window:toggle-maximize', (event) => {
+    if (event.sender !== mainWindow?.webContents || !mainWindow) return
+    if (mainWindow.isMaximized()) mainWindow.unmaximize()
+    else mainWindow.maximize()
+  })
+  ipcMain.on('window:close', (event) => {
+    if (event.sender === mainWindow?.webContents) mainWindow.close()
+  })
+  ipcMain.handle('window:is-maximized', (event) => {
+    return event.sender === mainWindow?.webContents && mainWindow.isMaximized()
+  })
   await initializeLauncherLog()
   currentSettings = await loadSettings()
   configureAutoUpdater()

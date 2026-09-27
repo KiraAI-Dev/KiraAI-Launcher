@@ -1,6 +1,17 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('kiraLauncher', {
+  window: {
+    minimize: () => ipcRenderer.send('window:minimize'),
+    toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),
+    close: () => ipcRenderer.send('window:close'),
+    isMaximized: () => ipcRenderer.invoke('window:is-maximized'),
+    onMaximized: (listener: (maximized: boolean) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, maximized: boolean) => listener(maximized)
+      ipcRenderer.on('window:maximized', handler)
+      return () => ipcRenderer.removeListener('window:maximized', handler)
+    },
+  },
   settings: {
     load: () => ipcRenderer.invoke('settings:load'),
     save: (settings: unknown) => ipcRenderer.invoke('settings:save', settings),

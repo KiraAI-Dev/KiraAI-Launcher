@@ -3,6 +3,7 @@ import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } 
 import { darkTheme, enUS, NButton, NDialogProvider, NIcon, NMessageProvider, NTag, useDialog, useMessage, zhCN } from 'naive-ui'
 import type { DataTableColumns, MenuOption } from 'naive-ui'
 import LogEntry from './components/LogEntry.vue'
+import WindowTitleBar from './components/WindowTitleBar.vue'
 import { getLogEntries } from './components/log-format'
 import LauncherReleaseNotes from './components/LauncherReleaseNotes.vue'
 import ProjectOperationProgress from './components/ProjectOperationProgress.vue'
@@ -757,6 +758,7 @@ onBeforeUnmount(() => {
     <n-message-provider>
       <MessageHost ref="messageHost" />
       <DialogHost ref="dialogHost" />
+      <WindowTitleBar :language="language" :dark="isDark" />
       <n-layout has-sider native-scrollbar class="app-layout" :class="{ 'dark-app': isDark }" :style="{ '--accent-color': activePalette.primary }">
       <n-layout-sider bordered collapse-mode="width" :collapsed-width="64" :width="238" show-trigger>
         <div class="brand"><n-icon :component="CubeOutline" size="25" :color="activePalette.primary" /><span>KiraAI Launcher</span></div>
