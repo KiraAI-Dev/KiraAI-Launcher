@@ -11,7 +11,7 @@ import { checkEnvironment, installEnvironmentTool } from './environment.js'
 import { getLocalProject, getLocalWebuiUrl, normalizeLocalWebuiHost, saveLocalWebuiSettings } from './local-project.js'
 import { readProjectLog } from './project-logs.js'
 import { registerProjectLogSubscriptions } from './project-log-subscriptions.js'
-import { initializeLauncherLog, readLauncherLog, writeLauncherLog } from './logger.js'
+import { clearLauncherLog, initializeLauncherLog, readLauncherLog, writeLauncherLog } from './logger.js'
 import { downloadAndRegisterProject as downloadProject } from './project-download.js'
 import { listProjectReleases } from './project-releases.js'
 import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
@@ -966,6 +966,7 @@ app.whenReady().then(async () => {
       throw error
     }
   })
+  ipcMain.handle('logs:clear', () => clearLauncherLog())
   registerProjectLogSubscriptions(ipcMain)
   ipcMain.handle('logs:read', (_event, projectId: unknown) => projectId === undefined ? readLauncherLog() : readProjectLog(projectId))
   createTray()

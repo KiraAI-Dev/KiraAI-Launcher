@@ -99,6 +99,21 @@ export async function initializeLauncherLog(): Promise<void> {
   })
 }
 
+export function clearLauncherLog(): Promise<void> {
+  const clear = writeQueue
+    .catch(() => undefined)
+    .then(async () => {
+      try {
+        await fs.truncate(launcherLogPath(), 0)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('LOG_CLEAR_FAILED')
+      }
+    })
+  // Serialize clearing with writes, but keep later logging alive if clearing fails.
+  writeQueue = clear.catch(() => undefined)
+  return clear
+}
+
 export async function readLauncherLog(): Promise<LauncherLog> {
   await writeQueue
   const logPath = launcherLogPath()

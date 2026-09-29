@@ -97,12 +97,14 @@ test('unreachable and unsupported instances do not expose response details', asy
 
 function refreshFixture() {
   const pending = []
+  const clears = []
   const subscriptions = []
   const state = {
     selectedLogSource: { value: 'launcher' }, logRequestId: 0, removeLogListener: undefined,
-    logsLoading: { value: false }, logsError: { value: '' }, currentLog: { value: { content: 'old' } },
+    logsLoading: { value: false }, logsClearing: { value: false }, logsError: { value: '' }, currentLog: { value: { content: 'old' } },
     requireLauncherBridge: () => ({ logs: {
       read: (id) => new Promise((resolve, reject) => pending.push({ id, resolve, reject })),
+      clear: () => new Promise((resolve, reject) => clears.push({ resolve, reject })),
       watch: (id, listener) => {
         const subscription = { id, listener, stopped: false }
         subscriptions.push(subscription)
@@ -111,8 +113,8 @@ function refreshFixture() {
     } }),
     getErrorMessage: () => 'read failed',
   }
-  const { refreshLogs, stopLogStream } = loadSource('src/App.vue', {}, state, ['refreshLogs', 'stopLogStream'])
-  return { state, pending, subscriptions, refresh: refreshLogs, stop: stopLogStream }
+  const { refreshLogs, stopLogStream, clearLogs } = loadSource('src/App.vue', {}, state, ['refreshLogs', 'stopLogStream', 'clearLogs'])
+  return { state, pending, subscriptions, clears, refresh: refreshLogs, stop: stopLogStream, clear: clearLogs }
 }
 
 test('source switch clears old content and ignores late results and failures', async () => {
@@ -428,4 +430,109 @@ test('cancelling log authentication aborts it without opening a stream or retryi
   assert.equal(authSignal.aborted, true)
   assert.deepEqual(errors, [])
   assert.ok(timers.every((timer) => timer.cleared))
+})
+
+function launcherLogFixture({ missing = false, clearError, beforeAppend = async () => {} } = {}) {
+  let content = missing ? undefined : 'existing log\n'
+  const absent = () => Object.assign(new Error('missing'), { code: 'ENOENT' })
+  const logger = loadSource('electron/logger.ts', {
+    electron: { app: { getPath: () => '/launcher-data' } },
+    'node:path': path.posix,
+    'node:fs': { promises: {
+      mkdir: async () => {}, chmod: async () => {},
+      stat: async () => { if (content === undefined) throw absent(); return { size: Buffer.byteLength(content) } },
+      appendFile: async (_path, line) => { await beforeAppend(); content = (content ?? '') + line },
+      truncate: async (file, length) => {
+        assert.equal(file, '/launcher-data/logs/launcher.log')
+        assert.equal(length, 0)
+        if (clearError) throw clearError
+        if (content === undefined) throw absent()
+        content = ''
+      },
+      open: async () => ({
+        read: async (buffer, offset, length, position) => ({ bytesRead: Buffer.from(content).copy(buffer, offset, position, position + length) }),
+        close: async () => {},
+      }),
+    } },
+  }, { process, Error })
+  return logger
+}
+
+test('clearing removes existing logs and serializes with writes before and after it', async () => {
+  let release
+  const blocked = new Promise((resolve) => { release = resolve })
+  const logger = launcherLogFixture({ beforeAppend: () => blocked })
+  const before = logger.writeLauncherLog('INFO', 'before clear')
+  const clear = logger.clearLauncherLog()
+  const after = logger.writeLauncherLog('INFO', 'after clear')
+  release()
+  await Promise.all([before, clear, after])
+  const log = await logger.readLauncherLog()
+  assert.doesNotMatch(log.content, /existing log|before clear/)
+  assert.match(log.content, /after clear/)
+  await logger.clearLauncherLog()
+  assert.equal((await logger.readLauncherLog()).content, '')
+  await logger.clearLauncherLog()
+  assert.equal((await logger.readLauncherLog()).content, '')
+})
+
+test('clearing a missing log succeeds; filesystem failures are sanitized and do not break subsequent writes', async () => {
+  const missing = launcherLogFixture({ missing: true })
+  await missing.clearLauncherLog()
+  assert.equal((await missing.readLauncherLog()).content, '')
+  await missing.writeLauncherLog('INFO', 'new log')
+  assert.match((await missing.readLauncherLog()).content, /new log/)
+  const failed = launcherLogFixture({ clearError: Object.assign(new Error('private path'), { code: 'EACCES' }) })
+  await assert.rejects(failed.clearLauncherLog(), /^Error: LOG_CLEAR_FAILED$/)
+  await failed.writeLauncherLog('INFO', 'still logging')
+  assert.match((await failed.readLauncherLog()).content, /existing log\n.*still logging/)
+})
+
+test('clear updates the launcher display and ignores reads that started before clearing', async () => {
+  const f = refreshFixture()
+  const read = f.refresh()
+  const clear = f.clear()
+  assert.equal(f.state.logsClearing.value, true)
+  await f.clear()
+  assert.equal(f.clears.length, 1)
+  f.clears[0].resolve()
+  await clear
+  assert.equal(f.state.logsClearing.value, false)
+  assert.equal(f.state.currentLog.value.content, '')
+  f.pending[0].resolve({ content: 'stale content' })
+  await read
+  assert.equal(f.state.currentLog.value.content, '')
+})
+
+test('clear is launcher-only and late success or failure cannot overwrite another source', async () => {
+  for (const failure of [false, true]) {
+    const f = refreshFixture()
+    const clear = f.clear()
+    f.state.selectedLogSource.value = 'instance'
+    await f.refresh()
+    f.subscriptions[0].listener({ log: { content: 'instance log' } })
+    await f.clear()
+    assert.equal(f.clears.length, 1)
+    if (failure) f.clears[0].reject(new Error('LOG_CLEAR_FAILED'))
+    else f.clears[0].resolve()
+    await clear
+    assert.equal(f.state.currentLog.value.content, 'instance log')
+    assert.equal(f.state.logsError.value, '')
+    assert.equal(f.subscriptions[0].stopped, false)
+  }
+})
+
+test('failed clear retains the displayed log and allows retry', async () => {
+  const f = refreshFixture()
+  const clear = f.clear()
+  f.clears[0].reject(new Error('LOG_CLEAR_FAILED'))
+  await clear
+  assert.equal(f.state.currentLog.value.content, 'old')
+  assert.equal(f.state.logsError.value, 'read failed')
+  assert.equal(f.state.logsClearing.value, false)
+  const retry = f.clear()
+  assert.equal(f.state.logsError.value, '')
+  f.clears[1].resolve()
+  await retry
+  assert.equal(f.state.currentLog.value.content, '')
 })

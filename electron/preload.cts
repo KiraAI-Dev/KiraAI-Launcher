@@ -59,6 +59,7 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
   },
   logs: {
     read: (projectId?: string) => ipcRenderer.invoke('logs:read', projectId),
+    clear: () => ipcRenderer.invoke('logs:clear'),
     watch: (projectId: string, listener: (update: unknown) => void) => {
       const id = ++logSubscriptionId
       const handler = (_event: Electron.IpcRendererEvent, update: { id: number }) => {
