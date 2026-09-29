@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed } from 'vue'
-import { NTag } from 'naive-ui'
+import { NTag, useThemeVars } from 'naive-ui'
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
 
@@ -14,6 +14,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   openLink: [url: string]
 }>()
+
+const themeVars = useThemeVars()
 
 const renderedMarkdown = computed(() => {
   const html = marked.parse(props.markdown || props.emptyText, { async: false, gfm: true })
@@ -43,12 +45,12 @@ function openLink(event: MouseEvent) {
 </template>
 
 <style scoped>
-.release-notes { position: relative; left: 50%; width: min(600px, calc(100vw - 390px)); padding: 16px; border: 1px solid var(--n-border-color); border-radius: 8px; background: #fafafc; transform: translateX(-50%); text-align: left; }
-.release-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: var(--n-text-color); }
-.release-body { max-height: 260px; overflow: auto; color: var(--n-text-color-2); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
+.release-notes { position: relative; left: 50%; width: min(600px, calc(100vw - 390px)); padding: 16px; border: 1px solid v-bind('themeVars.borderColor'); border-radius: 8px; background: v-bind('themeVars.bodyColor'); transform: translateX(-50%); text-align: left; }
+.release-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; color: v-bind('themeVars.textColor1'); }
+.release-body { max-height: 260px; overflow: auto; color: v-bind('themeVars.textColor2'); font-size: 13px; line-height: 1.65; overflow-wrap: anywhere; }
 .release-body :deep(> :first-child) { margin-top: 0; }
 .release-body :deep(> :last-child) { margin-bottom: 0; }
-.release-body :deep(h1), .release-body :deep(h2), .release-body :deep(h3), .release-body :deep(h4), .release-body :deep(h5), .release-body :deep(h6) { margin: 18px 0 8px; color: var(--n-text-color); line-height: 1.35; }
+.release-body :deep(h1), .release-body :deep(h2), .release-body :deep(h3), .release-body :deep(h4), .release-body :deep(h5), .release-body :deep(h6) { margin: 18px 0 8px; color: v-bind('themeVars.textColor1'); line-height: 1.35; }
 .release-body :deep(h1) { font-size: 20px; }
 .release-body :deep(h2) { font-size: 18px; }
 .release-body :deep(h3) { font-size: 16px; }
@@ -56,14 +58,13 @@ function openLink(event: MouseEvent) {
 .release-body :deep(p) { margin: 8px 0; }
 .release-body :deep(ul), .release-body :deep(ol) { margin: 8px 0; padding-left: 24px; }
 .release-body :deep(li + li) { margin-top: 4px; }
-.release-body :deep(a) { color: var(--accent-color); text-decoration: none; }
+.release-body :deep(a) { color: v-bind('themeVars.primaryColor'); text-decoration: none; }
 .release-body :deep(a:hover) { text-decoration: underline; }
 .release-body :deep(code) { padding: 2px 5px; border-radius: 4px; background: rgba(128, 128, 128, .14); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: 12px; }
 .release-body :deep(pre) { margin: 10px 0; padding: 12px; overflow-x: auto; border-radius: 6px; background: rgba(128, 128, 128, .12); }
 .release-body :deep(pre code) { padding: 0; background: transparent; }
-.release-body :deep(blockquote) { margin: 10px 0; padding-left: 12px; border-left: 3px solid var(--accent-color); color: var(--n-text-color-3); }
-.release-body :deep(hr) { margin: 16px 0; border: 0; border-top: 1px solid var(--n-border-color); }
+.release-body :deep(blockquote) { margin: 10px 0; padding-left: 12px; border-left: 3px solid v-bind('themeVars.primaryColor'); color: v-bind('themeVars.textColor3'); }
+.release-body :deep(hr) { margin: 16px 0; border: 0; border-top: 1px solid v-bind('themeVars.borderColor'); }
 .release-body :deep(table) { width: 100%; margin: 10px 0; border-collapse: collapse; }
-.release-body :deep(th), .release-body :deep(td) { padding: 7px 9px; border: 1px solid var(--n-border-color); text-align: left; }
-:global(.dark-app) .release-notes { background: #18181c; }
+.release-body :deep(th), .release-body :deep(td) { padding: 7px 9px; border: 1px solid v-bind('themeVars.borderColor'); text-align: left; }
 </style>
