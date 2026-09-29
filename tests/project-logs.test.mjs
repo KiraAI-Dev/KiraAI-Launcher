@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { EventEmitter } from 'node:events'
 import vm from 'node:vm'
 import test from 'node:test'
@@ -535,4 +536,33 @@ test('failed clear retains the displayed log and allows retry', async () => {
   f.clears[1].resolve()
   await retry
   assert.equal(f.state.currentLog.value.content, '')
+})
+
+test('log clearing IPC permits only the launcher main frame at its trusted document URL', async () => {
+  for (const isDev of [true, false]) {
+    const dirname = path.resolve('dist-electron')
+    const trustedUrl = isDev ? 'http://localhost:5173/' : pathToFileURL(path.join(dirname, '../dist/index.html')).href
+    const mainFrame = { url: trustedUrl + '?view=logs#logs' }
+    const webContents = { mainFrame }
+    const mainWindow = { webContents, isDestroyed: () => false }
+    let clears = 0
+    const state = { mainWindow, isDev, path, pathToFileURL, __dirname: dirname, clearLauncherLog: async () => { clears++ } }
+    const { clearLauncherLogFromRenderer: clear } = loadSource('electron/main.ts', {}, state, ['clearLauncherLogFromRenderer'])
+    const event = { sender: webContents, senderFrame: mainFrame }
+    await clear(event)
+    assert.equal(clears, 1)
+    await assert.rejects(clear({ ...event, sender: {} }), /LOG_CLEAR_FAILED/)
+    await assert.rejects(clear({ ...event, senderFrame: { url: trustedUrl } }), /LOG_CLEAR_FAILED/)
+    await assert.rejects(clear({ ...event, senderFrame: null }), /LOG_CLEAR_FAILED/)
+    for (const url of ['https://untrusted.test/', 'http://localhost:5173.evil.test/', 'http://localhost:5173/other.html', 'file:///untrusted/index.html', 'invalid']) {
+      mainFrame.url = url
+      await assert.rejects(clear(event), /LOG_CLEAR_FAILED/)
+    }
+    mainFrame.url = trustedUrl
+    for (const unavailable of [null, { ...mainWindow, isDestroyed: () => true }]) {
+      const { clearLauncherLogFromRenderer: unavailableClear } = loadSource('electron/main.ts', {}, { ...state, mainWindow: unavailable }, ['clearLauncherLogFromRenderer'])
+      await assert.rejects(unavailableClear(event), /LOG_CLEAR_FAILED/)
+    }
+    assert.equal(clears, 1)
+  }
 })
