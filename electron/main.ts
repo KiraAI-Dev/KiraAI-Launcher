@@ -677,6 +677,7 @@ async function waitForLocalWebui(target: string, child: ReturnType<typeof spawn>
 }
 
 async function openAuthenticatedWebui(project: StoredProject, target: string, sessionToken: string | undefined): Promise<void> {
+  const targetOrigin = new URL(target).origin
   const webuiWindow = new BrowserWindow({
     width: 1200,
     height: 800,
@@ -687,19 +688,45 @@ async function openAuthenticatedWebui(project: StoredProject, target: string, se
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: path.join(__dirname, 'webui-preload.cjs'),
       partition: `persist:kira-project-${project.id}`,
     },
   })
-  if (sessionToken) {
-    await webuiWindow.webContents.session.cookies.set({
-      url: target,
-      name: 'kira_token',
-      value: sessionToken,
-      httpOnly: true,
-      sameSite: 'lax',
-    })
+  // The WebUI router reads localStorage before making authenticated requests.
+  // Hand the session to this window's main frame once, before its app starts.
+  let initialSessionToken = sessionToken
+  webuiWindow.webContents.ipc.on('webui:initial-session', (event) => {
+    let token: string | null = null
+    if (initialSessionToken && event.sender === webuiWindow.webContents
+      && event.senderFrame && event.senderFrame === webuiWindow.webContents.mainFrame) {
+      try {
+        if (new URL(event.senderFrame.url).origin === targetOrigin) {
+          token = initialSessionToken
+          // Reloads must preserve logout and any token subsequently rotated by WebUI.
+          initialSessionToken = undefined
+        }
+      } catch {
+        // An invalid or opaque document URL must never receive the session.
+      }
+    }
+    event.returnValue = token
+  })
+  try {
+    if (sessionToken) {
+      await webuiWindow.webContents.session.cookies.set({
+        url: target,
+        name: 'kira_token',
+        value: sessionToken,
+        path: '/',
+        httpOnly: true,
+        sameSite: 'lax',
+      })
+    }
+    await webuiWindow.loadURL(target)
+  } catch (error) {
+    if (!webuiWindow.isDestroyed()) webuiWindow.destroy()
+    throw error
   }
-  await webuiWindow.loadURL(target)
 }
 
 async function openProject(id: string): Promise<void> {
