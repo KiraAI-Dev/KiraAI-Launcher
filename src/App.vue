@@ -31,6 +31,7 @@ const environmentTools = ref<EnvironmentTool[]>([])
 const logOutput = ref<HTMLElement | null>(null)
 const selectedLogSource = ref('launcher')
 let logRequestId = 0
+let removeLogListener: (() => void) | undefined
 const currentLog = ref<LauncherLog>({ content: '' })
 const selectedLogLevel = ref<LogLevelFilter>('ALL')
 const logsLoading = ref(false)
@@ -330,19 +331,40 @@ async function refreshEnvironment() {
   }
 }
 
+function stopLogStream() {
+  ++logRequestId
+  removeLogListener?.()
+  removeLogListener = undefined
+  logsLoading.value = false
+}
+
 async function refreshLogs() {
+  stopLogStream()
   const requestId = ++logRequestId
   const source = selectedLogSource.value
   logsLoading.value = true
   logsError.value = ''
   currentLog.value = { content: '' }
   try {
-    const result = await requireLauncherBridge().logs.read(source === 'launcher' ? undefined : source)
+    if (source !== 'launcher') {
+      removeLogListener = requireLauncherBridge().logs.watch(source, (update) => {
+        if (requestId !== logRequestId || source !== selectedLogSource.value) return
+        logsLoading.value = false
+        if (update.log) {
+          currentLog.value = update.log
+          logsError.value = ''
+        } else if (update.error) {
+          logsError.value = getErrorMessage(new Error(update.error))
+        }
+      })
+      return
+    }
+    const result = await requireLauncherBridge().logs.read()
     if (requestId === logRequestId && source === selectedLogSource.value) currentLog.value = result
   } catch (error) {
     if (requestId === logRequestId && source === selectedLogSource.value) logsError.value = getErrorMessage(error)
   } finally {
-    if (requestId === logRequestId) logsLoading.value = false
+    if (requestId === logRequestId && (source === 'launcher' || !removeLogListener)) logsLoading.value = false
   }
 }
 
@@ -709,6 +731,7 @@ watch([filteredLog, logOutput], () => {
 }, { flush: 'post' })
 
 watch(selectedLogSource, () => {
+  stopLogStream()
   currentLog.value = { content: '' }
   logsError.value = ''
   if (activeView.value === 'logs') void refreshLogs()
@@ -719,6 +742,7 @@ watch(logSourceOptions, (options) => {
 })
 
 watch(activeView, (view) => {
+  stopLogStream()
   if (view === 'logs') void refreshLogs()
 })
 
@@ -745,6 +769,7 @@ onMounted(() => {
   void refreshEnvironment()
 })
 onBeforeUnmount(() => {
+  stopLogStream()
   systemThemeQuery.removeEventListener('change', syncSystemTheme)
   if (runtimeTimer) window.clearInterval(runtimeTimer)
   removeUpdateStatusListener?.()

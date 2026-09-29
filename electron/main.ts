@@ -10,6 +10,7 @@ import { decryptAccessToken, encryptAccessToken, getInstanceRuntimeDuration, get
 import { checkEnvironment, installEnvironmentTool } from './environment.js'
 import { getLocalProject, getLocalWebuiUrl, normalizeLocalWebuiHost, saveLocalWebuiSettings } from './local-project.js'
 import { readProjectLog } from './project-logs.js'
+import { registerProjectLogSubscriptions } from './project-log-subscriptions.js'
 import { initializeLauncherLog, readLauncherLog, writeLauncherLog } from './logger.js'
 import { downloadAndRegisterProject as downloadProject } from './project-download.js'
 import { listProjectReleases } from './project-releases.js'
@@ -965,6 +966,7 @@ app.whenReady().then(async () => {
       throw error
     }
   })
+  registerProjectLogSubscriptions(ipcMain)
   ipcMain.handle('logs:read', (_event, projectId: unknown) => projectId === undefined ? readLauncherLog() : readProjectLog(projectId))
   createTray()
   createWindow()
