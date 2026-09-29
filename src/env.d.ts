@@ -105,6 +105,8 @@ interface Window {
     }
     logs: {
       read: (projectId?: string) => Promise<LauncherLog>
+      clear: () => Promise<void>
+      watch: (projectId: string, listener: (update: { log?: LauncherLog; error?: string }) => void) => () => void
     }
   }
 }

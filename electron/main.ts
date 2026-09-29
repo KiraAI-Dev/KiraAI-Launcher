@@ -4,13 +4,14 @@ import { promises as fs } from 'node:fs'
 import { createRequire } from 'node:module'
 import { createServer } from 'node:net'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { AppUpdater } from 'electron-updater'
 import { decryptAccessToken, encryptAccessToken, getInstanceRuntimeDuration, getInstanceVersion, getLocalAccessToken, getWebuiSessionToken, readJson, requestWithTimeout, verifyCloudProject } from './cloud.js'
 import { checkEnvironment, installEnvironmentTool } from './environment.js'
 import { getLocalProject, getLocalWebuiUrl, normalizeLocalWebuiHost, saveLocalWebuiSettings } from './local-project.js'
 import { readProjectLog } from './project-logs.js'
-import { initializeLauncherLog, readLauncherLog, writeLauncherLog } from './logger.js'
+import { registerProjectLogSubscriptions } from './project-log-subscriptions.js'
+import { clearLauncherLog, initializeLauncherLog, readLauncherLog, writeLauncherLog } from './logger.js'
 import { downloadAndRegisterProject as downloadProject } from './project-download.js'
 import { listProjectReleases } from './project-releases.js'
 import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
@@ -809,6 +810,23 @@ async function removeProject(id: string): Promise<void> {
   launchedProjects.delete(id)
 }
 
+/** Only the launcher's own top-level document may erase its log file. */
+async function clearLauncherLogFromRenderer(event: Electron.IpcMainInvokeEvent): Promise<void> {
+  if (!mainWindow || mainWindow.isDestroyed() || event.sender !== mainWindow.webContents
+    || !event.senderFrame || event.senderFrame !== mainWindow.webContents.mainFrame) throw new Error('LOG_CLEAR_FAILED')
+  const expectedUrl = isDev ? 'http://localhost:5173/' : pathToFileURL(path.join(__dirname, '../dist/index.html')).href
+  let senderUrl: URL
+  try {
+    senderUrl = new URL(event.senderFrame.url)
+  } catch {
+    throw new Error('LOG_CLEAR_FAILED')
+  }
+  senderUrl.hash = ''
+  senderUrl.search = ''
+  if (senderUrl.href !== expectedUrl) throw new Error('LOG_CLEAR_FAILED')
+  await clearLauncherLog()
+}
+
 function createWindow() {
   const window = new BrowserWindow({
     width: 1000,
@@ -965,6 +983,8 @@ app.whenReady().then(async () => {
       throw error
     }
   })
+  ipcMain.handle('logs:clear', clearLauncherLogFromRenderer)
+  registerProjectLogSubscriptions(ipcMain)
   ipcMain.handle('logs:read', (_event, projectId: unknown) => projectId === undefined ? readLauncherLog() : readProjectLog(projectId))
   createTray()
   createWindow()

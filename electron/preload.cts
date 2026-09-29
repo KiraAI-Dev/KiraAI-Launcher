@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
+let logSubscriptionId = 0
+
 contextBridge.exposeInMainWorld('kiraLauncher', {
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),
@@ -57,5 +59,18 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
   },
   logs: {
     read: (projectId?: string) => ipcRenderer.invoke('logs:read', projectId),
+    clear: () => ipcRenderer.invoke('logs:clear'),
+    watch: (projectId: string, listener: (update: unknown) => void) => {
+      const id = ++logSubscriptionId
+      const handler = (_event: Electron.IpcRendererEvent, update: { id: number }) => {
+        if (update.id === id) listener(update)
+      }
+      ipcRenderer.on('logs:changed', handler)
+      ipcRenderer.send('logs:watch', id, projectId)
+      return () => {
+        ipcRenderer.removeListener('logs:changed', handler)
+        ipcRenderer.send('logs:unwatch', id)
+      }
+    },
   },
 })

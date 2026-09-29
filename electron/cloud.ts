@@ -21,7 +21,8 @@ export async function requestWithTimeout(url: string, init?: RequestInit, timeou
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    return await net.fetch(url, { ...init, signal: controller.signal })
+    const signal = init?.signal ? AbortSignal.any([init.signal, controller.signal]) : controller.signal
+    return await net.fetch(url, { ...init, signal })
   } finally {
     clearTimeout(timeout)
   }
@@ -49,10 +50,10 @@ export async function readJson(response: Response): Promise<unknown> {
   }
 }
 
-export async function getWebuiSessionToken(url: string, accessToken?: string): Promise<string | undefined> {
+export async function getWebuiSessionToken(url: string, accessToken?: string, signal?: AbortSignal): Promise<string | undefined> {
   let configResponse: Response
   try {
-    configResponse = await requestWithTimeout(`${url}/api/auth/config`)
+    configResponse = await requestWithTimeout(`${url}/api/auth/config`, { signal })
   } catch {
     throw new Error('CLOUD_UNREACHABLE')
   }
@@ -67,6 +68,7 @@ export async function getWebuiSessionToken(url: string, accessToken?: string): P
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ access_token: authEnabled ? accessToken : 'disabled' }),
+      signal,
     })
   } catch {
     throw new Error('CLOUD_UNREACHABLE')
