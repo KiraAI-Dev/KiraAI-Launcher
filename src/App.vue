@@ -83,6 +83,7 @@ const updateInstalling = ref(false)
 const updateCheckResult = ref<LauncherUpdateCheck | null>(null)
 const updateCheckError = ref('')
 const updateAvailable = ref(false)
+const updateDownloading = computed(() => updateCheckResult.value?.downloading === true)
 let updateRestartPromptShown = false
 const messageHost = ref<{ success: (content: string) => unknown } | null>(null)
 const dialogHost = ref<ReturnType<typeof useDialog> | null>(null)
@@ -105,6 +106,7 @@ const environmentError = ref('')
 const projectError = ref('')
 const closeReminder = ref(true)
 const autoUpdate = ref(true)
+const autoDownloadUpdate = ref(true)
 const closeAction = ref('minimize')
 const webuiOpenMode = ref<LauncherSettings['webuiOpenMode']>('launcher')
 const settingsReady = ref(false)
@@ -270,8 +272,9 @@ async function checkForUpdates() {
   updateCheckError.value = ''
   updateCheckResult.value = null
   try {
-    updateCheckResult.value = await requireLauncherBridge().updates.check()
-    updateAvailable.value = updateCheckResult.value.updateAvailable
+    const result = await requireLauncherBridge().updates.check()
+    applyLauncherUpdateStatus(result)
+    if (!result.updateAvailable) messageHost.value?.success(aboutText.value.latest.replace('{version}', result.latestVersion))
   } catch {
     updateCheckError.value = aboutText.value.failed
   } finally {
@@ -293,6 +296,14 @@ async function installUpdate() {
 
 function openReleaseNotesLink(url: string) {
   void requireLauncherBridge().updates.openReleaseLink(url).catch(() => undefined)
+}
+
+function applyLauncherUpdateStatus(result: LauncherUpdateCheck) {
+  updateAvailable.value = result.updateAvailable
+  updateCheckResult.value = result.updateAvailable ? result : null
+  if (result.downloadFailed) updateCheckError.value = aboutText.value.downloadFailed
+  else if (result.downloading || result.downloaded) updateCheckError.value = ''
+  showUpdateRestartPrompt(result)
 }
 
 function showUpdateRestartPrompt(result: LauncherUpdateCheck) {
@@ -726,11 +737,12 @@ async function restoreSettings() {
     closeAction.value = savedSettings.closeAction
     closeReminder.value = savedSettings.closeReminder
     autoUpdate.value = savedSettings.autoUpdate
+    autoDownloadUpdate.value = savedSettings.autoDownloadUpdate
   }
   settingsReady.value = true
 }
 
-watch([themeMode, themeColor, language, webuiOpenMode, closeAction, closeReminder, autoUpdate], () => {
+watch([themeMode, themeColor, language, webuiOpenMode, closeAction, closeReminder, autoUpdate, autoDownloadUpdate], () => {
   if (!settingsReady.value || !window.kiraLauncher) return
   void window.kiraLauncher.settings.save({
     themeMode: themeMode.value,
@@ -740,6 +752,7 @@ watch([themeMode, themeColor, language, webuiOpenMode, closeAction, closeReminde
     closeAction: closeAction.value as LauncherSettings['closeAction'],
     closeReminder: closeReminder.value,
     autoUpdate: autoUpdate.value,
+    autoDownloadUpdate: autoDownloadUpdate.value,
   })
 })
 
@@ -771,16 +784,9 @@ onMounted(() => {
   systemThemeQuery.addEventListener('change', syncSystemTheme)
   runtimeTimer = window.setInterval(() => { runtimeNow.value = Date.now() }, 1000)
   const updates = window.kiraLauncher?.updates
-  removeUpdateStatusListener = updates?.onStatus((result) => {
-    updateAvailable.value = result.updateAvailable
-    if (result.updateAvailable) updateCheckResult.value = result
-    showUpdateRestartPrompt(result)
-  })
+  removeUpdateStatusListener = updates?.onStatus(applyLauncherUpdateStatus)
   void updates?.getStatus().then((result) => {
-    if (!result) return
-    updateAvailable.value = result.updateAvailable
-    if (result.updateAvailable) updateCheckResult.value = result
-    showUpdateRestartPrompt(result)
+    if (result) applyLauncherUpdateStatus(result)
   })
   void restoreSettings()
   void refreshManagedProjects()
@@ -798,7 +804,7 @@ onBeforeUnmount(() => {
 <template>
   <n-config-provider :theme="isDark ? darkTheme : null" :locale="language === 'zh-CN' ? zhCN : enUS" :theme-overrides="themeOverrides">
     <n-dialog-provider>
-    <n-message-provider>
+    <n-message-provider :container-style="{ top: '48px' }">
       <MessageHost ref="messageHost" />
       <DialogHost ref="dialogHost" />
       <WindowTitleBar :language="language" :dark="isDark" />
@@ -845,9 +851,24 @@ onBeforeUnmount(() => {
           </template>
           <template v-else-if="activeView === 'settings'"><n-space vertical :size="30" class="settings-page"><div class="page-heading"><div><h1>{{ t.settings }}</h1><p>{{ t.settingsSub }}</p></div></div>
             <section><h2 class="settings-section-title">{{ t.appearance }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="isDark ? MoonOutline : SunnyOutline" size="22" /><div><h3>{{ t.theme }}</h3><p>{{ t.themeSub }}</p></div></div><n-select v-model:value="themeMode" :options="themeOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><span class="palette-dot" :style="{ backgroundColor: activePalette.primary }"></span><div><h3>{{ t.themeColor }}</h3><p>{{ t.themeColorSub }}</p></div></div><n-select v-model:value="themeColor" :options="colorOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="LanguageOutline" size="22" /><div><h3>{{ t.language }}</h3><p>{{ t.languageSub }}</p></div></div><n-select v-model:value="language" :options="languageOptions" style="width: 190px" /></div></n-card></n-space></section>
-            <section><h2 class="settings-section-title">{{ t.behavior }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.webuiOpenMode }}</h3><p>{{ t.webuiOpenModeSub }}</p></div></div><n-select v-model:value="webuiOpenMode" :options="webuiOpenModeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeWhen }}</h3><p>{{ t.closeWhenSub }}</p></div></div><n-select v-model:value="closeAction" :options="closeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeReminder }}</h3><p>{{ t.closeReminderSub }}</p></div></div><n-switch v-model:value="closeReminder" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoUpdate }}</h3><p>{{ t.autoUpdateSub }}</p></div></div><n-switch v-model:value="autoUpdate" /></div></n-card></n-space></section>
+            <section><h2 class="settings-section-title">{{ t.behavior }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.webuiOpenMode }}</h3><p>{{ t.webuiOpenModeSub }}</p></div></div><n-select v-model:value="webuiOpenMode" :options="webuiOpenModeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeWhen }}</h3><p>{{ t.closeWhenSub }}</p></div></div><n-select v-model:value="closeAction" :options="closeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeReminder }}</h3><p>{{ t.closeReminderSub }}</p></div></div><n-switch v-model:value="closeReminder" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoUpdate }}</h3><p>{{ t.autoUpdateSub }}</p></div></div><n-switch v-model:value="autoUpdate" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoDownloadUpdate }}</h3><p>{{ t.autoDownloadUpdateSub }}</p></div></div><n-switch v-model:value="autoDownloadUpdate" /></div></n-card></n-space></section>
           </n-space></template>
-          <template v-else-if="activeView === 'about'"><div class="about-page"><n-card class="about-card" :bordered="false"><n-space vertical align="center" :size="18"><img src="/icon.png" class="about-icon" alt="KiraAI Launcher" /><div class="about-copy"><h1>{{ aboutText.title }}</h1><p>{{ aboutText.version }} {{ launcherVersion }}</p></div><n-button type="primary" :loading="updateChecking || updateInstalling" @click="updateAvailable ? installUpdate() : checkForUpdates()"><template #icon><n-icon :component="updateAvailable ? DownloadOutline : RefreshOutline" /></template>{{ updateInstalling ? aboutText.updating : updateChecking ? aboutText.checking : updateAvailable ? aboutText.updateNow : aboutText.check }}</n-button><LauncherReleaseNotes v-if="updateCheckResult?.updateAvailable" :title="aboutText.releaseNotes" :version="updateCheckResult.latestVersion" :markdown="updateCheckResult.releaseNotes" :empty-text="aboutText.noReleaseNotes" @open-link="openReleaseNotesLink" /><n-alert v-if="updateCheckResult && !updateCheckResult.updateAvailable" type="success" :show-icon="false" class="about-update-result">{{ aboutText.latest.replace('{version}', updateCheckResult.latestVersion) }}</n-alert><n-alert v-if="updateCheckError" type="error" :show-icon="false" class="about-update-result">{{ updateCheckError }}</n-alert></n-space></n-card></div></template>
+          <template v-else-if="activeView === 'about'">
+            <div class="about-page"><n-card class="about-card" :bordered="false"><n-space vertical align="center" :size="18">
+              <img src="/icon.png" class="about-icon" alt="KiraAI Launcher" />
+              <div class="about-copy"><h1>{{ aboutText.title }}</h1><p>{{ aboutText.version }} {{ launcherVersion }}</p></div>
+              <n-button type="primary" :loading="updateChecking || updateInstalling || updateDownloading" :disabled="updateDownloading" @click="updateAvailable ? installUpdate() : checkForUpdates()">
+                <template #icon><n-icon :component="updateAvailable ? DownloadOutline : RefreshOutline" /></template>
+                {{ updateDownloading ? aboutText.downloading : updateInstalling ? aboutText.updating : updateChecking ? aboutText.checking : updateCheckResult?.downloaded ? aboutText.restartNow : updateAvailable ? aboutText.updateNow : aboutText.check }}
+              </n-button>
+              <div v-if="updateCheckResult && updateCheckResult.downloadProgress !== null" class="about-download-progress">
+                <n-text depth="3" role="status">{{ updateCheckResult.downloadFailed ? aboutText.downloadFailed : updateCheckResult.downloaded ? aboutText.downloaded : aboutText.downloading }}</n-text>
+                <n-progress type="line" :percentage="Math.floor(updateCheckResult.downloadProgress)" :status="updateCheckResult.downloadFailed ? 'error' : updateCheckResult.downloaded ? 'success' : 'default'" :processing="updateDownloading" :aria-label="aboutText.downloading" />
+              </div>
+              <LauncherReleaseNotes v-if="updateCheckResult?.updateAvailable" :title="aboutText.releaseNotes" :version="updateCheckResult.latestVersion" :markdown="updateCheckResult.releaseNotes" :empty-text="aboutText.noReleaseNotes" @open-link="openReleaseNotesLink" />
+              <n-alert v-if="updateCheckError" type="error" :show-icon="false" class="about-update-result">{{ updateCheckError }}</n-alert>
+            </n-space></n-card></div>
+          </template>
           <template v-else><div class="placeholder"><n-empty :description="`${viewTitle} ${t.moduleComing}`" size="large"><template #icon><n-icon :component="RocketOutline" /></template><n-button type="primary" @click="activeView = 'overview'">{{ t.backOverview }}</n-button></n-empty></div></template>
         </n-layout-content>
       </n-layout>

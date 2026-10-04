@@ -185,16 +185,20 @@ function configureAutoUpdater() {
   // Windows update metadata has no architecture suffix. Keep ARM64 on a dedicated channel
   // so it cannot download the x64 installer from the shared GitHub release.
   if (process.platform === 'win32' && process.arch === 'arm64') autoUpdater.channel = 'latest-arm64'
-  autoUpdater.autoDownload = true
+  // Start downloads after publishing update metadata, so even cached downloads have visible state.
+  autoUpdater.autoDownload = false
   autoUpdater.autoInstallOnAppQuit = true
   autoUpdater.on('update-available', () => {
     updateDownloaded = false
   })
+  autoUpdater.on('download-progress', (progress) => {
+    if (!latestUpdateCheck?.downloading) return
+    publishLauncherUpdate({ ...latestUpdateCheck, downloadProgress: Math.min(100, Math.max(0, progress.percent)) })
+  })
   autoUpdater.on('update-downloaded', () => {
     updateDownloaded = true
     if (!latestUpdateCheck?.updateAvailable) return
-    latestUpdateCheck = { ...latestUpdateCheck, downloaded: true }
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updates:status', latestUpdateCheck)
+    publishLauncherUpdate({ ...latestUpdateCheck, downloaded: true, downloading: false, downloadProgress: 100, downloadFailed: false })
   })
 }
 
@@ -296,13 +300,50 @@ async function checkLauncherRelease(): Promise<LauncherUpdateCheck> {
     latestVersion: release.tag_name,
     updateAvailable: isNewerVersion(release.tag_name, currentVersion),
     downloaded: false,
+    downloading: false,
+    downloadProgress: null,
+    downloadFailed: false,
     releaseUrl: release.html_url,
     releaseNotes: typeof release.body === 'string' ? release.body.trim() : '',
   }
 }
 
+function publishLauncherUpdate(updateCheck: LauncherUpdateCheck): void {
+  latestUpdateCheck = updateCheck
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updates:status', updateCheck)
+}
+
+async function downloadLauncherUpdate(): Promise<void> {
+  if (!canUseAutoUpdater() || !latestUpdateCheck?.updateAvailable || updateDownloaded) return
+  if (latestUpdateDownloadPromise) {
+    await latestUpdateDownloadPromise
+    return
+  }
+  publishLauncherUpdate({ ...latestUpdateCheck, downloading: true, downloadProgress: 0, downloadFailed: false })
+  latestUpdateDownloadPromise = (async () => {
+    try {
+      return await autoUpdater.downloadUpdate()
+    } catch {
+      if (latestUpdateCheck) publishLauncherUpdate({ ...latestUpdateCheck, downloading: false, downloadFailed: true })
+      throw new Error('LAUNCHER_UPDATE_DOWNLOAD_FAILED')
+    }
+  })()
+  try {
+    await latestUpdateDownloadPromise
+  } finally {
+    latestUpdateDownloadPromise = null
+  }
+}
+
+function applyLauncherUpdateSettings(previousSettings: LauncherSettings): void {
+  if (!previousSettings.autoDownloadUpdate && currentSettings.autoDownloadUpdate) {
+    void downloadLauncherUpdate().catch(() => undefined)
+  }
+}
+
 async function checkLauncherUpdate(): Promise<LauncherUpdateCheck> {
   if (updateCheckPromise) return updateCheckPromise
+  if (latestUpdateCheck?.downloading || latestUpdateCheck?.downloaded) return latestUpdateCheck
   updateCheckPromise = (async () => {
     let updateCheck: LauncherUpdateCheck
     if (!canUseAutoUpdater()) {
@@ -315,12 +356,15 @@ async function checkLauncherUpdate(): Promise<LauncherUpdateCheck> {
         const currentVersion = app.getVersion()
         const updateAvailable = isNewerVersion(latestVersion, currentVersion)
         const release = updateAvailable ? await checkLauncherRelease().catch(() => null) : null
-        latestUpdateDownloadPromise = updateAvailable ? result?.downloadPromise ?? null : null
+        updateDownloaded = false
         updateCheck = {
           currentVersion,
           latestVersion,
           updateAvailable,
-          downloaded: updateAvailable && updateDownloaded,
+          downloaded: false,
+          downloading: false,
+          downloadProgress: null,
+          downloadFailed: false,
           releaseUrl: release?.releaseUrl ?? LAUNCHER_RELEASES_URL,
           releaseNotes: release?.releaseNotes || normalizeReleaseNotes(result?.updateInfo.releaseNotes),
         }
@@ -328,9 +372,11 @@ async function checkLauncherUpdate(): Promise<LauncherUpdateCheck> {
         throw new Error('LAUNCHER_UPDATE_CHECK_FAILED')
       }
     }
-    latestUpdateCheck = updateCheck
-    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('updates:status', updateCheck)
-    return updateCheck
+    publishLauncherUpdate(updateCheck)
+    if (updateCheck.updateAvailable && currentSettings.autoDownloadUpdate) {
+      void downloadLauncherUpdate().catch(() => undefined)
+    }
+    return latestUpdateCheck ?? updateCheck
   })()
   try {
     return await updateCheckPromise
@@ -346,10 +392,7 @@ async function installLauncherUpdate(): Promise<void> {
     return
   }
   try {
-    if (!updateDownloaded) {
-      if (latestUpdateDownloadPromise) await latestUpdateDownloadPromise
-      else await autoUpdater.downloadUpdate()
-    }
+    await downloadLauncherUpdate()
     isQuitting = true
     autoUpdater.quitAndInstall()
   } catch {
@@ -912,7 +955,9 @@ app.whenReady().then(async () => {
     return currentSettings
   })
   ipcMain.handle('settings:save', async (_event, settings: unknown) => {
+    const previousSettings = currentSettings
     currentSettings = await saveSettings(settings)
+    applyLauncherUpdateSettings(previousSettings)
     updateTrayMenu(currentSettings)
     return currentSettings
   })
