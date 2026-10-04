@@ -784,9 +784,13 @@ onMounted(() => {
   systemThemeQuery.addEventListener('change', syncSystemTheme)
   runtimeTimer = window.setInterval(() => { runtimeNow.value = Date.now() }, 1000)
   const updates = window.kiraLauncher?.updates
-  removeUpdateStatusListener = updates?.onStatus(applyLauncherUpdateStatus)
+  let updateStatusReceived = false
+  removeUpdateStatusListener = updates?.onStatus((result) => {
+    updateStatusReceived = true
+    applyLauncherUpdateStatus(result)
+  })
   void updates?.getStatus().then((result) => {
-    if (result) applyLauncherUpdateStatus(result)
+    if (result && !updateStatusReceived) applyLauncherUpdateStatus(result)
   })
   void restoreSettings()
   void refreshManagedProjects()

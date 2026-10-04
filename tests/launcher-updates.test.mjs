@@ -262,3 +262,61 @@ test('all locales keep matching keys, placeholders and formatting markers', () =
   }
   assert.deepEqual(signature(messages['zh-CN']), signature(messages['en-US']))
 })
+
+function mountedUpdatesFixture() {
+  const fixture = rendererFixture()
+  let resolveSnapshot, statusListener
+  const script = readFileSync(new URL('../src/App.vue', import.meta.url), 'utf8')
+    .split('<script setup lang="ts">')[1].split('</script>')[0]
+  const ast = ts.createSourceFile('App.ts', script, ts.ScriptTarget.Latest, true)
+  const mounted = ast.statements.find((node) => ts.isExpressionStatement(node)
+    && ts.isCallExpression(node.expression) && node.expression.expression.getText(ast) === 'onMounted')
+  assert.ok(mounted, 'The mounted hook must be present')
+  const { outputText } = ts.transpileModule('export const mount = ' + mounted.expression.arguments[0].getText(ast), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  })
+  Object.assign(fixture.state, {
+    systemThemeQuery: { addEventListener: () => {} }, syncSystemTheme: () => {},
+    runtimeTimer: undefined, runtimeNow: { value: 0 }, removeUpdateStatusListener: undefined,
+    window: { setInterval: () => 1, kiraLauncher: { updates: {
+      onStatus: (listener) => { statusListener = listener; return () => { statusListener = undefined } },
+      getStatus: () => new Promise((resolve) => { resolveSnapshot = resolve }),
+    } } },
+    restoreSettings: async () => {}, refreshManagedProjects: async () => {}, refreshEnvironment: async () => {},
+  })
+  vm.runInContext(outputText, fixture.state)
+  fixture.state.exports.mount()
+  return { ...fixture, emit: (status) => statusListener(status), resolveSnapshot: (status) => resolveSnapshot(status) }
+}
+
+test('startup snapshot cannot overwrite newer progress, completion, availability or download errors', async () => {
+  const events = [
+    { ...updateResult(), downloading: true, downloadProgress: 75 },
+    { ...updateResult(), downloaded: true, downloadProgress: 100 },
+    updateResult(false),
+    { ...updateResult(), downloadFailed: true, downloadProgress: 18 },
+  ]
+  for (const latest of events) {
+    const fixture = mountedUpdatesFixture()
+    fixture.emit(latest)
+    fixture.resolveSnapshot({ ...updateResult(), downloading: true, downloadProgress: 0 })
+    await settle()
+    assert.equal(fixture.state.updateAvailable.value, latest.updateAvailable)
+    assert.deepEqual(fixture.state.updateCheckResult.value, latest.updateAvailable ? latest : null)
+    assert.equal(fixture.state.updateCheckError.value, latest.downloadFailed ? 'Download failed' : '')
+    assert.equal(fixture.prompts.length, latest.downloaded ? 1 : 0)
+    assert.equal(fixture.toasts.length, 0)
+  }
+})
+
+test('startup snapshot applies without a live event and later events keep updating state', async () => {
+  const fixture = mountedUpdatesFixture()
+  const snapshot = { ...updateResult(), downloading: true, downloadProgress: 44 }
+  fixture.resolveSnapshot(snapshot)
+  await settle()
+  assert.deepEqual(fixture.state.updateCheckResult.value, snapshot)
+  const latest = { ...snapshot, downloadProgress: 66 }
+  fixture.emit(latest)
+  assert.deepEqual(fixture.state.updateCheckResult.value, latest)
+  assert.equal(fixture.prompts.length, 0)
+})
