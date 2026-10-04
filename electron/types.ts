@@ -81,6 +81,9 @@ export type LauncherUpdateCheck = {
   latestVersion: string
   updateAvailable: boolean
   downloaded: boolean
+  downloading: boolean
+  downloadProgress: number | null
+  downloadFailed: boolean
   releaseUrl: string
   releaseNotes: string
 }
@@ -108,4 +111,5 @@ export type LauncherSettings = {
   closeAction: CloseAction
   closeReminder: boolean
   autoUpdate: boolean
+  autoDownloadUpdate: boolean
 }

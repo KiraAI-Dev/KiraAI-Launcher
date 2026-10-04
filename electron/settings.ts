@@ -11,6 +11,7 @@ export const defaultSettings: LauncherSettings = {
   closeAction: 'minimize',
   closeReminder: true,
   autoUpdate: true,
+  autoDownloadUpdate: true,
 }
 
 function settingsPath() {
@@ -27,6 +28,7 @@ export function sanitizeSettings(value: unknown): LauncherSettings {
     closeAction: ['minimize', 'quit'].includes(candidate.closeAction ?? '') ? candidate.closeAction as CloseAction : defaultSettings.closeAction,
     closeReminder: typeof candidate.closeReminder === 'boolean' ? candidate.closeReminder : defaultSettings.closeReminder,
     autoUpdate: typeof candidate.autoUpdate === 'boolean' ? candidate.autoUpdate : defaultSettings.autoUpdate,
+    autoDownloadUpdate: typeof candidate.autoDownloadUpdate === 'boolean' ? candidate.autoDownloadUpdate : defaultSettings.autoDownloadUpdate,
   }
 }
 

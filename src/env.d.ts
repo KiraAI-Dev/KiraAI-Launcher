@@ -8,6 +8,7 @@ interface LauncherSettings {
   closeAction: 'minimize' | 'quit'
   closeReminder: boolean
   autoUpdate: boolean
+  autoDownloadUpdate: boolean
 }
 
 interface ManagedProject {
@@ -53,6 +54,9 @@ interface LauncherUpdateCheck {
   latestVersion: string
   updateAvailable: boolean
   downloaded: boolean
+  downloading: boolean
+  downloadProgress: number | null
+  downloadFailed: boolean
   releaseUrl: string
   releaseNotes: string
 }
