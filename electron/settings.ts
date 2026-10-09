@@ -10,6 +10,8 @@ export const defaultSettings: LauncherSettings = {
   webuiOpenMode: 'launcher',
   closeAction: 'minimize',
   closeReminder: true,
+  launchAtLogin: false,
+  startMinimized: false,
   autoUpdate: true,
   autoDownloadUpdate: true,
 }
@@ -27,6 +29,8 @@ export function sanitizeSettings(value: unknown): LauncherSettings {
     webuiOpenMode: ['launcher', 'browser'].includes(candidate.webuiOpenMode ?? '') ? candidate.webuiOpenMode as WebuiOpenMode : defaultSettings.webuiOpenMode,
     closeAction: ['minimize', 'quit'].includes(candidate.closeAction ?? '') ? candidate.closeAction as CloseAction : defaultSettings.closeAction,
     closeReminder: typeof candidate.closeReminder === 'boolean' ? candidate.closeReminder : defaultSettings.closeReminder,
+    launchAtLogin: typeof candidate.launchAtLogin === 'boolean' ? candidate.launchAtLogin : defaultSettings.launchAtLogin,
+    startMinimized: typeof candidate.startMinimized === 'boolean' ? candidate.startMinimized : defaultSettings.startMinimized,
     autoUpdate: typeof candidate.autoUpdate === 'boolean' ? candidate.autoUpdate : defaultSettings.autoUpdate,
     autoDownloadUpdate: typeof candidate.autoDownloadUpdate === 'boolean' ? candidate.autoDownloadUpdate : defaultSettings.autoDownloadUpdate,
   }

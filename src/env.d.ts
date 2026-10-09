@@ -7,6 +7,8 @@ interface LauncherSettings {
   webuiOpenMode: 'launcher' | 'browser'
   closeAction: 'minimize' | 'quit'
   closeReminder: boolean
+  launchAtLogin: boolean
+  startMinimized: boolean
   autoUpdate: boolean
   autoDownloadUpdate: boolean
 }
@@ -74,6 +76,7 @@ interface Window {
     }
     settings: {
       load: () => Promise<LauncherSettings>
+      startupSupported: () => Promise<boolean>
       save: (settings: LauncherSettings) => Promise<LauncherSettings>
     }
     projects: {

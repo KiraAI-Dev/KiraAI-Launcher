@@ -15,7 +15,8 @@ import { clearLauncherLog, initializeLauncherLog, readLauncherLog, writeLauncher
 import { downloadAndRegisterProject as downloadProject } from './project-download.js'
 import { listProjectReleases } from './project-releases.js'
 import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
-import { defaultSettings, loadSettings, saveSettings } from './settings.js'
+import { defaultSettings, loadSettings, sanitizeSettings, saveSettings } from './settings.js'
+import { getLaunchAtLogin, isStartupSupported, setLaunchAtLogin, shouldStartInTray, LOGIN_START_ARGUMENT } from './startup.js'
 import type { CloseAction, LauncherSettings, LauncherUpdateCheck, ManagedProject, OverviewData, ProjectProgressReporter, StoredProject } from './types.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -45,6 +46,17 @@ type GitHubReleaseResponse = {
   body?: unknown
 }
 
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+if (!hasSingleInstanceLock) app.quit()
+
+let mainWindowRequested = false
+app.on('second-instance', (_event, argv) => {
+  if (argv.includes(LOGIN_START_ARGUMENT)) return
+  mainWindowRequested = true
+  if (mainWindow) showMainWindow()
+})
+
+let settingsSaveQueue: Promise<unknown> = Promise.resolve()
 let currentSettings = defaultSettings
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
@@ -142,7 +154,8 @@ async function requestApplicationClose(action: CloseAction): Promise<void> {
   try {
     if (currentSettings.closeReminder && !await confirmApplicationClose(action)) return
     if (action === 'minimize') {
-      mainWindow?.hide()
+      if (tray) mainWindow?.hide()
+      else mainWindow?.minimize()
       return
     }
     await quitApplication()
@@ -897,8 +910,9 @@ async function clearLauncherLogFromRenderer(event: Electron.IpcMainInvokeEvent):
   await clearLauncherLog()
 }
 
-function createWindow() {
+function createWindow(show = true) {
   const window = new BrowserWindow({
+    show,
     width: 1000,
     height: 700,
     minWidth: 600,
@@ -930,7 +944,26 @@ function createWindow() {
   else window.loadFile(path.join(__dirname, '../dist/index.html'))
 }
 
+async function saveLauncherSettings(value: unknown): Promise<LauncherSettings> {
+  const previousSettings = currentSettings
+  const nextSettings = sanitizeSettings(value)
+  const startupChanged = previousSettings.launchAtLogin !== nextSettings.launchAtLogin
+  try {
+    if (startupChanged) await setLaunchAtLogin(nextSettings.launchAtLogin)
+    currentSettings = await saveSettings(nextSettings)
+  } catch {
+    if (startupChanged) {
+      try { await setLaunchAtLogin(previousSettings.launchAtLogin) } catch { /* Keep the original save failure. */ }
+    }
+    throw new Error('SETTINGS_SAVE_FAILED')
+  }
+  applyLauncherUpdateSettings(previousSettings)
+  updateTrayMenu(currentSettings)
+  return currentSettings
+}
+
 app.whenReady().then(async () => {
+  if (!hasSingleInstanceLock) return
   // Preserve macOS's default app/Edit menu roles and their keyboard shortcuts.
   if (process.platform !== 'darwin') Menu.setApplicationMenu(null)
   ipcMain.on('window:minimize', (event) => {
@@ -949,17 +982,18 @@ app.whenReady().then(async () => {
   })
   await initializeLauncherLog()
   currentSettings = await loadSettings()
+  try {
+    currentSettings = { ...currentSettings, launchAtLogin: await getLaunchAtLogin() }
+  } catch {
+    void writeLauncherLog('WARN', 'Unable to read login startup settings')
+  }
   configureAutoUpdater()
-  ipcMain.handle('settings:load', async () => {
-    currentSettings = await loadSettings()
-    return currentSettings
-  })
-  ipcMain.handle('settings:save', async (_event, settings: unknown) => {
-    const previousSettings = currentSettings
-    currentSettings = await saveSettings(settings)
-    applyLauncherUpdateSettings(previousSettings)
-    updateTrayMenu(currentSettings)
-    return currentSettings
+  ipcMain.handle('settings:startup-supported', isStartupSupported)
+  ipcMain.handle('settings:load', () => settingsSaveQueue.then(() => currentSettings))
+  ipcMain.handle('settings:save', (_event, settings: unknown) => {
+    const save = settingsSaveQueue.then(() => saveLauncherSettings(settings))
+    settingsSaveQueue = save.catch(() => undefined)
+    return save
   })
   ipcMain.handle('projects:list', () => loadProjects().then((projects) => projects.map(toManagedProject)))
   ipcMain.handle('projects:choose-local', async () => {
@@ -1058,13 +1092,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('logs:clear', clearLauncherLogFromRenderer)
   registerProjectLogSubscriptions(ipcMain)
   ipcMain.handle('logs:read', (_event, projectId: unknown) => projectId === undefined ? readLauncherLog() : readProjectLog(projectId))
-  createTray()
-  createWindow()
+  try {
+    createTray()
+  } catch {
+    tray = null
+    void writeLauncherLog('WARN', 'Unable to create the system tray; showing the launcher window')
+  }
+  createWindow(mainWindowRequested || !tray || !shouldStartInTray(currentSettings))
   if (currentSettings.autoUpdate && canUseAutoUpdater()) void checkLauncherUpdate().catch(() => undefined)
   app.on('activate', showMainWindow)
 })
 app.on('before-quit', (event) => {
-  if (isQuitting) return
+  if (!hasSingleInstanceLock || isQuitting) return
   event.preventDefault()
   void requestApplicationClose('quit')
 })
