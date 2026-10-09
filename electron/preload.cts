@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
   },
   settings: {
     load: () => ipcRenderer.invoke('settings:load'),
+    startupSupported: () => ipcRenderer.invoke('settings:startup-supported'),
     save: (settings: unknown) => ipcRenderer.invoke('settings:save', settings),
   },
   projects: {
