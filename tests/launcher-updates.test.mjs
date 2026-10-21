@@ -29,7 +29,7 @@ function updateResult(updateAvailable = true) {
 }
 
 function updaterFixture({ autoDownloadUpdate = false, supported = true, available = true, cached = false } = {}) {
-  const updater = new EventEmitter(), sent = [], downloads = [], opened = []
+  const updater = new EventEmitter(), sent = [], downloads = [], opened = [], installCalls = []
   let checks = 0, installs = 0
   updater.checkForUpdates = async () => {
     checks++
@@ -46,7 +46,7 @@ function updaterFixture({ autoDownloadUpdate = false, supported = true, availabl
     if (cached) pending.finish()
     return promise
   }
-  updater.quitAndInstall = () => { installs++ }
+  updater.quitAndInstall = (...args) => { installs++; installCalls.push(args) }
   const fixture = loadSource('electron/main.ts', {}, {
     autoUpdater: updater, canUseAutoUpdater: () => supported,
     process: { platform: 'win32', arch: 'x64' }, app: { getVersion: () => '0.4.0' },
@@ -58,7 +58,7 @@ function updaterFixture({ autoDownloadUpdate = false, supported = true, availabl
     LAUNCHER_RELEASES_URL: updateResult().releaseUrl, shell: { openExternal: async (url) => opened.push(url) },
   }, ['configureAutoUpdater', 'publishLauncherUpdate', 'downloadLauncherUpdate', 'applyLauncherUpdateSettings', 'checkLauncherUpdate', 'installLauncherUpdate'])
   fixture.configureAutoUpdater()
-  return { ...fixture, updater, sent, downloads, opened, checks: () => checks, installs: () => installs }
+  return { ...fixture, updater, sent, downloads, opened, installCalls, checks: () => checks, installs: () => installs }
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve))
@@ -118,6 +118,19 @@ test('manual update waits for download and installs only after it completes', as
   fixture.downloads[0].finish()
   await installing
   assert.equal(fixture.installs(), 1)
+  assert.deepEqual(fixture.installCalls, [[true, true]])
+  assert.equal(fixture.state.isQuitting, true)
+})
+
+test('restart after automatic download installs silently and relaunches without another download', async () => {
+  const fixture = updaterFixture({ autoDownloadUpdate: true })
+  await fixture.checkLauncherUpdate()
+  fixture.downloads[0].finish()
+  await settle()
+  assert.equal(fixture.installs(), 0)
+  await fixture.installLauncherUpdate()
+  assert.equal(fixture.downloads.length, 1)
+  assert.deepEqual(fixture.installCalls, [[true, true]])
   assert.equal(fixture.state.isQuitting, true)
 })
 

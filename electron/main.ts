@@ -407,7 +407,7 @@ async function installLauncherUpdate(): Promise<void> {
   try {
     await downloadLauncherUpdate()
     isQuitting = true
-    autoUpdater.quitAndInstall()
+    autoUpdater.quitAndInstall(true, true)
   } catch {
     throw new Error('LAUNCHER_UPDATE_INSTALL_FAILED')
   }
