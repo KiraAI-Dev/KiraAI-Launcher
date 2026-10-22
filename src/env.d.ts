@@ -7,6 +7,7 @@ interface LauncherSettings {
   webuiOpenMode: 'launcher' | 'browser'
   closeAction: 'minimize' | 'quit'
   closeReminder: boolean
+  persistInstanceState: boolean
   launchAtLogin: boolean
   startMinimized: boolean
   autoUpdate: boolean
@@ -91,6 +92,7 @@ interface Window {
       getAccessToken: (id: string) => Promise<string>
       start: (id: string, requestId: string) => Promise<void>
       onProgress: (listener: (progress: ProjectProgress) => void) => () => void
+      onChanged: (listener: () => void) => () => void
       stop: (id: string) => Promise<void>
       open: (id: string) => Promise<void>
       openFolder: (id: string) => Promise<void>

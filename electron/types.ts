@@ -110,6 +110,7 @@ export type LauncherSettings = {
   webuiOpenMode: WebuiOpenMode
   closeAction: CloseAction
   closeReminder: boolean
+  persistInstanceState: boolean
   launchAtLogin: boolean
   startMinimized: boolean
   autoUpdate: boolean

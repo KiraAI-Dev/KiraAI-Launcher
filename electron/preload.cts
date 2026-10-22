@@ -35,6 +35,11 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
       ipcRenderer.on('projects:progress', handler)
       return () => ipcRenderer.removeListener('projects:progress', handler)
     },
+    onChanged: (listener: () => void) => {
+      const handler = () => listener()
+      ipcRenderer.on('projects:changed', handler)
+      return () => ipcRenderer.removeListener('projects:changed', handler)
+    },
     stop: (id: string) => ipcRenderer.invoke('projects:stop', id),
     open: (id: string) => ipcRenderer.invoke('projects:open', id),
     openFolder: (id: string) => ipcRenderer.invoke('projects:open-folder', id),

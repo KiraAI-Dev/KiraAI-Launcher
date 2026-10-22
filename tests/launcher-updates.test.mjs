@@ -50,7 +50,7 @@ function updaterFixture({ autoDownloadUpdate = false, supported = true, availabl
   const fixture = loadSource('electron/main.ts', {}, {
     autoUpdater: updater, canUseAutoUpdater: () => supported,
     process: { platform: 'win32', arch: 'x64' }, app: { getVersion: () => '0.4.0' },
-    currentSettings: { autoDownloadUpdate }, updateDownloaded: false,
+    currentSettings: { autoDownloadUpdate }, updateDownloaded: false, stopLocalProjectsForExit: async () => {},
     latestUpdateCheck: null, latestUpdateDownloadPromise: null, updateCheckPromise: null, isQuitting: false,
     mainWindow: { isDestroyed: () => false, webContents: { send: (channel, status) => sent.push({ channel, status }) } },
     checkLauncherRelease: async () => updateResult(available),
@@ -290,8 +290,8 @@ function mountedUpdatesFixture() {
   })
   Object.assign(fixture.state, {
     systemThemeQuery: { addEventListener: () => {} }, syncSystemTheme: () => {},
-    runtimeTimer: undefined, runtimeNow: { value: 0 }, removeUpdateStatusListener: undefined,
-    window: { setInterval: () => 1, kiraLauncher: { updates: {
+    runtimeTimer: undefined, runtimeNow: { value: 0 }, removeUpdateStatusListener: undefined, removeProjectChangeListener: undefined,
+    window: { setInterval: () => 1, kiraLauncher: { projects: { onChanged: () => () => {} }, updates: {
       onStatus: (listener) => { statusListener = listener; return () => { statusListener = undefined } },
       getStatus: () => new Promise((resolve) => { resolveSnapshot = resolve }),
     } } },
@@ -332,4 +332,19 @@ test('startup snapshot applies without a live event and later events keep updati
   fixture.emit(latest)
   assert.deepEqual(fixture.state.updateCheckResult.value, latest)
   assert.equal(fixture.prompts.length, 0)
+})
+
+test('update installation waits for instance snapshot and shutdown before quitting', async () => {
+  const f = updaterFixture({ autoDownloadUpdate: true, cached: true })
+  await f.checkLauncherUpdate()
+  let finishStop
+  f.state.stopLocalProjectsForExit = () => new Promise(resolve => { finishStop = resolve })
+  const installing = f.installLauncherUpdate()
+  await settle()
+  assert.equal(f.installs(), 0)
+  assert.equal(f.state.isQuitting, false)
+  finishStop()
+  await installing
+  assert.equal(f.installs(), 1)
+  assert.equal(f.state.isQuitting, true)
 })

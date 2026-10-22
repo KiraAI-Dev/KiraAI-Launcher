@@ -49,6 +49,8 @@ Select a project from **Projects** and use its actions to:
 - Configure additional launch arguments and environment variables for the next local start.
 - Remove it from the launcher. Removing a local project never deletes its files.
 
+In **Settings → System behavior**, enable **Restore local instances on next launch** to remember active local instances before quitting and restart them the next time the launcher opens, including launch at login. This option defaults to off. Quitting still stops the instances; minimizing to the tray keeps them running. The session is saved during normal launcher exit; forced termination, power loss, or a system restart that bypasses normal exit may not save it. A failed restore is attempted only once and recorded in the launcher log.
+
 The default local WebUI port is `5267`. Stop a project before changing its port.
 
 ## 🧪 Development
