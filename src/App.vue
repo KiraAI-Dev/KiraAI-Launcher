@@ -110,6 +110,7 @@ const environmentSelectedVersions = ref<Partial<Record<EnvironmentTool['name'], 
 const environmentError = ref('')
 const projectError = ref('')
 const closeReminder = ref(true)
+const persistInstanceState = ref(false)
 const autoUpdate = ref(true)
 const autoDownloadUpdate = ref(true)
 const closeAction = ref('minimize')
@@ -747,6 +748,7 @@ async function restoreSettings() {
     webuiOpenMode.value = savedSettings.webuiOpenMode
     closeAction.value = savedSettings.closeAction
     closeReminder.value = savedSettings.closeReminder
+    persistInstanceState.value = savedSettings.persistInstanceState
     launchAtLogin.value = savedSettings.launchAtLogin
     startMinimized.value = savedSettings.startMinimized
     autoUpdate.value = savedSettings.autoUpdate
@@ -755,7 +757,7 @@ async function restoreSettings() {
   settingsReady.value = true
 }
 
-function queueSettingsSave(startup: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized'>> = {}) {
+function queueSettingsSave(overrides: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized' | 'persistInstanceState'>> = {}) {
   const save = settingsSaveQueue.then(async () => {
     const saved = await requireLauncherBridge().settings.save({
       themeMode: themeMode.value,
@@ -764,20 +766,22 @@ function queueSettingsSave(startup: Partial<Pick<LauncherSettings, 'launchAtLogi
       webuiOpenMode: webuiOpenMode.value,
       closeAction: closeAction.value as LauncherSettings['closeAction'],
       closeReminder: closeReminder.value,
+      persistInstanceState: persistInstanceState.value,
       autoUpdate: autoUpdate.value,
       autoDownloadUpdate: autoDownloadUpdate.value,
       launchAtLogin: launchAtLogin.value,
       startMinimized: startMinimized.value,
-      ...startup,
+      ...overrides,
     })
     launchAtLogin.value = saved.launchAtLogin
     startMinimized.value = saved.startMinimized
+    persistInstanceState.value = saved.persistInstanceState
   })
   settingsSaveQueue = save.catch(() => undefined)
   return save
 }
 
-async function saveStartupSettings(startup: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized'>>) {
+async function saveBehaviorSettings(startup: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized' | 'persistInstanceState'>>) {
   startupSaving.value = true
   try {
     await queueSettingsSave(startup)
@@ -816,6 +820,7 @@ watch(activeView, (view) => {
 
 let runtimeTimer: number | undefined
 let removeUpdateStatusListener: (() => void) | undefined
+let removeProjectChangeListener: (() => void) | undefined
 
 onMounted(() => {
   systemThemeQuery.addEventListener('change', syncSystemTheme)
@@ -829,6 +834,7 @@ onMounted(() => {
   void updates?.getStatus().then((result) => {
     if (result && !updateStatusReceived) applyLauncherUpdateStatus(result)
   })
+  removeProjectChangeListener = window.kiraLauncher?.projects.onChanged(() => { void refreshManagedProjects() })
   void restoreSettings()
   void refreshManagedProjects()
   void refreshEnvironment()
@@ -838,6 +844,7 @@ onBeforeUnmount(() => {
   systemThemeQuery.removeEventListener('change', syncSystemTheme)
   if (runtimeTimer) window.clearInterval(runtimeTimer)
   removeUpdateStatusListener?.()
+  removeProjectChangeListener?.()
   removeProjectProgressListener?.()
 })
 </script>
@@ -893,8 +900,9 @@ onBeforeUnmount(() => {
           <template v-else-if="activeView === 'settings'"><n-space vertical :size="30" class="settings-page"><div class="page-heading"><div><h1>{{ t.settings }}</h1><p>{{ t.settingsSub }}</p></div></div>
             <section><h2 class="settings-section-title">{{ t.appearance }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="isDark ? MoonOutline : SunnyOutline" size="22" /><div><h3>{{ t.theme }}</h3><p>{{ t.themeSub }}</p></div></div><n-select v-model:value="themeMode" :options="themeOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><span class="palette-dot" :style="{ backgroundColor: activePalette.primary }"></span><div><h3>{{ t.themeColor }}</h3><p>{{ t.themeColorSub }}</p></div></div><n-select v-model:value="themeColor" :options="colorOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="LanguageOutline" size="22" /><div><h3>{{ t.language }}</h3><p>{{ t.languageSub }}</p></div></div><n-select v-model:value="language" :options="languageOptions" style="width: 190px" /></div></n-card></n-space></section>
             <section><h2 class="settings-section-title">{{ t.behavior }}</h2><n-space vertical :size="14">
-              <n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.launchAtLogin }}</h3><p>{{ t.launchAtLoginSub }}</p></div></div><n-switch :value="launchAtLogin" :disabled="!settingsReady || !startupSupported || startupSaving" :loading="startupSaving" :aria-label="t.launchAtLogin" @update:value="saveStartupSettings({ launchAtLogin: $event })" /></div></n-card>
-              <n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.startMinimized }}</h3><p>{{ t.startMinimizedSub }}</p></div></div><n-switch :value="startMinimized" :disabled="!settingsReady || !startupSupported || !launchAtLogin || startupSaving" :aria-label="t.startMinimized" @update:value="saveStartupSettings({ startMinimized: $event })" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.webuiOpenMode }}</h3><p>{{ t.webuiOpenModeSub }}</p></div></div><n-select v-model:value="webuiOpenMode" :options="webuiOpenModeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeWhen }}</h3><p>{{ t.closeWhenSub }}</p></div></div><n-select v-model:value="closeAction" :options="closeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeReminder }}</h3><p>{{ t.closeReminderSub }}</p></div></div><n-switch v-model:value="closeReminder" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoUpdate }}</h3><p>{{ t.autoUpdateSub }}</p></div></div><n-switch v-model:value="autoUpdate" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoDownloadUpdate }}</h3><p>{{ t.autoDownloadUpdateSub }}</p></div></div><n-switch v-model:value="autoDownloadUpdate" /></div></n-card></n-space></section>
+              <n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.persistInstanceState }}</h3><p>{{ t.persistInstanceStateSub }}</p></div></div><n-switch :value="persistInstanceState" :disabled="!settingsReady || startupSaving" :loading="startupSaving" :aria-label="t.persistInstanceState" @update:value="saveBehaviorSettings({ persistInstanceState: $event })" /></div></n-card>
+              <n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.launchAtLogin }}</h3><p>{{ t.launchAtLoginSub }}</p></div></div><n-switch :value="launchAtLogin" :disabled="!settingsReady || !startupSupported || startupSaving" :loading="startupSaving" :aria-label="t.launchAtLogin" @update:value="saveBehaviorSettings({ launchAtLogin: $event })" /></div></n-card>
+              <n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.startMinimized }}</h3><p>{{ t.startMinimizedSub }}</p></div></div><n-switch :value="startMinimized" :disabled="!settingsReady || !startupSupported || !launchAtLogin || startupSaving" :aria-label="t.startMinimized" @update:value="saveBehaviorSettings({ startMinimized: $event })" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.webuiOpenMode }}</h3><p>{{ t.webuiOpenModeSub }}</p></div></div><n-select v-model:value="webuiOpenMode" :options="webuiOpenModeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeWhen }}</h3><p>{{ t.closeWhenSub }}</p></div></div><n-select v-model:value="closeAction" :options="closeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeReminder }}</h3><p>{{ t.closeReminderSub }}</p></div></div><n-switch v-model:value="closeReminder" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoUpdate }}</h3><p>{{ t.autoUpdateSub }}</p></div></div><n-switch v-model:value="autoUpdate" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoDownloadUpdate }}</h3><p>{{ t.autoDownloadUpdateSub }}</p></div></div><n-switch v-model:value="autoDownloadUpdate" /></div></n-card></n-space></section>
           </n-space></template>
           <template v-else-if="activeView === 'about'">
             <div class="about-page"><n-card class="about-card" :bordered="false"><n-space vertical align="center" :size="18">

@@ -15,6 +15,7 @@ import { clearLauncherLog, initializeLauncherLog, readLauncherLog, writeLauncher
 import { downloadAndRegisterProject as downloadProject } from './project-download.js'
 import { listProjectReleases } from './project-releases.js'
 import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
+import { loadProjectSession, saveProjectSession } from './project-session.js'
 import { defaultSettings, loadSettings, sanitizeSettings, saveSettings } from './settings.js'
 import { getLaunchAtLogin, isStartupSupported, setLaunchAtLogin, shouldStartInTray, LOGIN_START_ARGUMENT } from './startup.js'
 import type { CloseAction, LauncherSettings, LauncherUpdateCheck, ManagedProject, OverviewData, ProjectProgressReporter, StoredProject } from './types.js'
@@ -61,6 +62,8 @@ let currentSettings = defaultSettings
 let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
+let stoppingLocalProjects = false
+let localProjectsStopPromise: Promise<void> | null = null
 let closePromptInProgress = false
 let updateCheckPromise: Promise<LauncherUpdateCheck> | null = null
 let latestUpdateCheck: LauncherUpdateCheck | null = null
@@ -143,7 +146,7 @@ async function confirmApplicationClose(action: CloseAction): Promise<boolean> {
 }
 
 async function quitApplication(): Promise<void> {
-  await Promise.allSettled([...launchedProjects.keys()].map((id) => stopLocalProject(id)))
+  await stopLocalProjectsForExit()
   isQuitting = true
   app.quit()
 }
@@ -216,6 +219,63 @@ function configureAutoUpdater() {
 }
 
 const launchedProjects = new Map<string, ReturnType<typeof spawn>>()
+const startingProjects = new Map<string, Promise<void>>()
+const pendingProjectRestores = new Set<string>()
+
+async function prepareProjectRestore(): Promise<void> {
+  try {
+    const ids = await loadProjectSession()
+    // Consume once, including when disabled, so failed or stale entries are not retried.
+    await saveProjectSession([])
+    if (!currentSettings.persistInstanceState) return
+    const projects = await loadProjects()
+    const localIds = new Set(projects.filter((project) => project.type === 'local').map((project) => project.id))
+    for (const id of ids) {
+      if (localIds.has(id)) pendingProjectRestores.add(id)
+    }
+  } catch {
+    void writeLauncherLog('WARN', 'Unable to load the previous local project session')
+  }
+}
+
+async function restoreLocalProjects(): Promise<void> {
+  for (const id of pendingProjectRestores) {
+    if (stoppingLocalProjects) break
+    try {
+      await startLocalProject(id, () => undefined)
+    } catch {
+      await stopLocalProject(id).catch(() => undefined)
+      void writeLauncherLog('WARN', 'Unable to restore a local project')
+    } finally {
+      pendingProjectRestores.delete(id)
+      publishProjectChange()
+    }
+  }
+}
+
+function stopLocalProjectsForExit(): Promise<void> {
+  localProjectsStopPromise ??= persistAndStopLocalProjects()
+  return localProjectsStopPromise
+}
+
+async function persistAndStopLocalProjects(): Promise<void> {
+  stoppingLocalProjects = true
+  // Honor a settings save already accepted from the renderer.
+  await settingsSaveQueue
+  try {
+    const ids = currentSettings.persistInstanceState
+      ? [...new Set([...launchedProjects.keys(), ...startingProjects.keys(), ...pendingProjectRestores])]
+      : []
+    await saveProjectSession(ids)
+  } catch {
+    void writeLauncherLog('WARN', 'Unable to save the local project session')
+  }
+  await Promise.allSettled([...launchedProjects.keys()].map((id) => stopLocalProject(id)))
+}
+
+function publishProjectChange(): void {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('projects:changed')
+}
 
 async function loadOverview(): Promise<OverviewData> {
   const projects = await loadProjects()
@@ -406,6 +466,7 @@ async function installLauncherUpdate(): Promise<void> {
   }
   try {
     await downloadLauncherUpdate()
+    await stopLocalProjectsForExit()
     isQuitting = true
     autoUpdater.quitAndInstall(true, true)
   } catch {
@@ -450,6 +511,19 @@ function runCommand(command: string, args: string[], timeout = 8000): Promise<{ 
 }
 
 async function startLocalProject(id: string, report: ProjectProgressReporter): Promise<void> {
+  if (stoppingLocalProjects) throw new Error('LOCAL_START_FAILED')
+  const existing = startingProjects.get(id)
+  if (existing) return existing
+  const task = launchLocalProject(id, report)
+  startingProjects.set(id, task)
+  try {
+    await task
+  } finally {
+    startingProjects.delete(id)
+  }
+}
+
+async function launchLocalProject(id: string, report: ProjectProgressReporter): Promise<void> {
   report({ stage: 'validate' })
   if (launchedProjects.has(id)) return
   const project = (await loadProjects()).find((item) => item.id === id)
@@ -491,6 +565,7 @@ async function startLocalProject(id: string, report: ProjectProgressReporter): P
     await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
   }
 
+  if (stoppingLocalProjects) throw new Error('LOCAL_START_FAILED')
   report({ stage: 'launch' })
   const child = spawn(venvPythonPath, ['main.py', ...project.launchArgs ?? []], {
     cwd: project.projectPath,
@@ -505,10 +580,12 @@ async function startLocalProject(id: string, report: ProjectProgressReporter): P
   launchedProjects.set(id, child)
   child.once('exit', (code, signal) => {
     launchedProjects.delete(id)
+    publishProjectChange()
     void writeLauncherLog(code === 0 ? 'INFO' : 'WARN', 'Local project process exited', { project: project.name, code, signal })
   })
   child.once('error', () => {
     launchedProjects.delete(id)
+    publishProjectChange()
     void writeLauncherLog('ERROR', 'Local project process failed', { project: project.name })
   })
   await waitForSpawn(child)
@@ -532,6 +609,7 @@ function ensureLocalPortAvailable(port: number, host: string | undefined): Promi
 }
 
 async function stopLocalProject(id: string): Promise<void> {
+  pendingProjectRestores.delete(id)
   const child = launchedProjects.get(id)
   if (!child) return
   launchedProjects.delete(id)
@@ -891,6 +969,7 @@ async function removeProject(id: string): Promise<void> {
   if (!projects.some((project) => project.id === id)) throw new Error('PROJECT_NOT_FOUND')
   await saveProjects(projects.filter((project) => project.id !== id))
   launchedProjects.delete(id)
+  pendingProjectRestores.delete(id)
 }
 
 /** Only the launcher's own top-level document may erase its log file. */
@@ -987,6 +1066,7 @@ app.whenReady().then(async () => {
   } catch {
     void writeLauncherLog('WARN', 'Unable to read login startup settings')
   }
+  await prepareProjectRestore()
   configureAutoUpdater()
   ipcMain.handle('settings:startup-supported', isStartupSupported)
   ipcMain.handle('settings:load', () => settingsSaveQueue.then(() => currentSettings))
@@ -1099,6 +1179,7 @@ app.whenReady().then(async () => {
     void writeLauncherLog('WARN', 'Unable to create the system tray; showing the launcher window')
   }
   createWindow(mainWindowRequested || !tray || !shouldStartInTray(currentSettings))
+  void restoreLocalProjects()
   if (currentSettings.autoUpdate && canUseAutoUpdater()) void checkLauncherUpdate().catch(() => undefined)
   app.on('activate', showMainWindow)
 })

@@ -60,12 +60,14 @@ test('startup settings default off, reject non-booleans and persist both prefere
   const settings = loadSource('electron/settings.ts', {
     electron: { app: { getPath: () => '/settings' } }, 'node:fs': { promises: fs }, 'node:path': path.posix,
   })
-  for (const input of [{}, { launchAtLogin: 'true', startMinimized: 1 }]) {
+  for (const input of [{}, { launchAtLogin: 'true', startMinimized: 1, persistInstanceState: 'true' }]) {
     assert.equal(settings.sanitizeSettings(input).launchAtLogin, false)
     assert.equal(settings.sanitizeSettings(input).startMinimized, false)
+    assert.equal(settings.sanitizeSettings(input).persistInstanceState, false)
   }
-  await settings.saveSettings({ launchAtLogin: true, startMinimized: true })
+  await settings.saveSettings({ launchAtLogin: true, startMinimized: true, persistInstanceState: true })
   assert.equal((await settings.loadSettings()).launchAtLogin, true)
+  assert.equal((await settings.loadSettings()).persistInstanceState, true)
   assert.equal((await settings.loadSettings()).startMinimized, true)
   await settings.saveSettings({ launchAtLogin: false, startMinimized: true })
   assert.equal((await settings.loadSettings()).launchAtLogin, false)
@@ -248,20 +250,21 @@ test('queued UI saves preserve startup preferences when appearance changes concu
     settingsSaveQueue: Promise.resolve(),
     themeMode: ref('system'), themeColor: ref('blue'), language: ref('zh-CN'), webuiOpenMode: ref('launcher'),
     closeAction: ref('minimize'), closeReminder: ref(true), autoUpdate: ref(true), autoDownloadUpdate: ref(true),
-    launchAtLogin: ref(false), startMinimized: ref(false),
+    launchAtLogin: ref(false), startMinimized: ref(false), persistInstanceState: ref(false),
     requireLauncherBridge: () => ({ settings: { save: async settings => {
       writes.push(settings)
       if (writes.length === 1) await new Promise(resolve => { finishFirst = resolve })
       return settings
     } } }),
   }, ['queueSettingsSave'])
-  const startup = f.queueSettingsSave({ launchAtLogin: true })
+  const startup = f.queueSettingsSave({ launchAtLogin: true, persistInstanceState: true })
   await new Promise(resolve => setImmediate(resolve))
   f.state.themeMode.value = 'dark'
   const appearance = f.queueSettingsSave()
   finishFirst()
   await Promise.all([startup, appearance])
   assert.equal(writes[1].launchAtLogin, true)
+  assert.equal(writes[1].persistInstanceState, true)
   assert.equal(writes[1].themeMode, 'dark')
 })
 
@@ -274,4 +277,263 @@ test('all locale keys and interpolation variables match', () => {
   }
   const locales = Object.values(messages)
   for (const locale of locales.slice(1)) assert.deepEqual(leaves(locale), leaves(locales[0]))
+})
+
+function sessionStoreFixture(initial, failure) {
+  const files = new Map(initial === undefined ? [] : [['/settings/project-session.json', initial]])
+  const writes = []
+  const fs = {
+    mkdir: async () => {},
+    readFile: async file => {
+      if (!files.has(file)) throw Object.assign(new Error('missing'), { code: 'ENOENT' })
+      return files.get(file)
+    },
+    writeFile: async (file, content, options) => { writes.push({ file, options }); files.set(file, content) },
+    rename: async (from, to) => {
+      if (failure) throw new Error('private disk detail')
+      files.set(to, files.get(from)); files.delete(from)
+    },
+  }
+  return { ...loadSource('electron/project-session.ts', {
+    electron: { app: { getPath: () => '/settings' } }, 'node:fs': { promises: fs }, 'node:path': path.posix,
+  }), files, writes }
+}
+
+test('project sessions tolerate a missing file and filter malformed IDs without storing runtime or secrets', async () => {
+  const f = sessionStoreFixture()
+  assert.deepEqual(Array.from(await f.loadProjectSession()), [])
+  await f.saveProjectSession(['local', 'local', 'another'])
+  assert.equal(f.files.get('/settings/project-session.json'), '["local","another"]\n')
+  assert.equal(f.files.has('/settings/project-session.json.tmp'), false)
+  assert.equal(f.writes[0].options.mode, 0o600)
+  f.files.set('/settings/project-session.json', '["local",null,42,"",{}, "local"]')
+  assert.deepEqual(Array.from(await f.loadProjectSession()), ['local'])
+  f.files.set('/settings/project-session.json', '{"ids":["local"]}')
+  assert.deepEqual(Array.from(await f.loadProjectSession()), [])
+  f.files.set('/settings/project-session.json', '{broken')
+  await assert.rejects(f.loadProjectSession(), /JSON/)
+})
+
+test('an unsuccessful atomic session replacement preserves the previous snapshot', async () => {
+  const f = sessionStoreFixture('["previous"]', true)
+  await assert.rejects(f.saveProjectSession(['new']), /private disk detail/)
+  assert.equal(f.files.get('/settings/project-session.json'), '["previous"]')
+})
+
+function sessionLifecycleFixture(overrides = {}) {
+  const events = []
+  const f = loadSource('electron/main.ts', {}, {
+    currentSettings: { persistInstanceState: true },
+    settingsSaveQueue: Promise.resolve(), stoppingLocalProjects: false, isQuitting: false, localProjectsStopPromise: null,
+    launchedProjects: new Map([['running', {}]]), startingProjects: new Map([['starting', {}]]),
+    pendingProjectRestores: new Set(),
+    loadProjectSession: async () => ['local', 'local', 'cloud', 'removed'],
+    saveProjectSession: async ids => events.push(['save', Array.from(ids)]),
+    loadProjects: async () => [{ id: 'local', type: 'local' }, { id: 'cloud', type: 'cloud' }],
+    startLocalProject: async id => events.push(['start', id]),
+    stopLocalProject: async id => events.push(['stop', id]),
+    publishProjectChange: () => events.push(['changed']),
+    writeLauncherLog: (...args) => events.push(['log', ...args]),
+    stopLocalProjectsForExit: undefined,
+    app: { quit: () => events.push(['quit']) },
+    ...overrides,
+  }, ['prepareProjectRestore', 'restoreLocalProjects', 'stopLocalProjectsForExit', 'persistAndStopLocalProjects', 'quitApplication'])
+  return { ...f, events }
+}
+
+test('a session is consumed once and only existing local projects are restored', async () => {
+  const f = sessionLifecycleFixture()
+  await f.prepareProjectRestore()
+  assert.deepEqual(Array.from(f.state.pendingProjectRestores), ['local'])
+  assert.deepEqual(f.events, [['save', []]])
+  await f.restoreLocalProjects()
+  assert.deepEqual(f.events, [['save', []], ['start', 'local'], ['changed']])
+  await f.restoreLocalProjects()
+  assert.equal(f.events.filter(([kind]) => kind === 'start').length, 1)
+})
+
+test('disabled restoration clears stale snapshots without starting projects', async () => {
+  const f = sessionLifecycleFixture({ currentSettings: { persistInstanceState: false } })
+  await f.prepareProjectRestore()
+  await f.restoreLocalProjects()
+  assert.deepEqual(f.events, [['save', []]])
+})
+
+test('unreadable or unconsumable sessions never start instances or expose private errors', async () => {
+  for (const method of ['loadProjectSession', 'saveProjectSession']) {
+    const f = sessionLifecycleFixture({ [method]: async () => { throw new Error('secret path/token') } })
+    await f.prepareProjectRestore()
+    await f.restoreLocalProjects()
+    assert.equal(f.events.some(([kind]) => kind === 'start'), false)
+    assert.equal(JSON.stringify(f.events).includes('secret'), false)
+  }
+})
+
+test('restoration isolates failures, cleans up a failed process, and continues to the next instance', async () => {
+  const started = []
+  const f = sessionLifecycleFixture({
+    pendingProjectRestores: new Set(['bad', 'good']),
+    startLocalProject: async id => { started.push(id); if (id === 'bad') throw new Error('private reason') },
+  })
+  await f.restoreLocalProjects()
+  assert.deepEqual(started, ['bad', 'good'])
+  assert.deepEqual(f.events.filter(([kind]) => kind === 'stop'), [['stop', 'bad']])
+  assert.equal(f.state.pendingProjectRestores.size, 0)
+  assert.equal(f.events.filter(([kind]) => kind === 'changed').length, 2)
+  assert.equal(JSON.stringify(f.events).includes('private reason'), false)
+})
+
+test('quitting snapshots running, starting and queued restores before stopping and exiting', async () => {
+  const f = sessionLifecycleFixture({ pendingProjectRestores: new Set(['running', 'queued']) })
+  await f.quitApplication()
+  assert.deepEqual(f.events, [['save', ['running', 'starting', 'queued']], ['stop', 'running'], ['quit']])
+  assert.equal(f.state.stoppingLocalProjects, true)
+  assert.equal(f.state.isQuitting, true)
+})
+
+test('exit honors an accepted settings save and still stops processes when snapshot saving fails', async () => {
+  let finishSave
+  const f = sessionLifecycleFixture({
+    settingsSaveQueue: new Promise(resolve => { finishSave = resolve }),
+    saveProjectSession: async () => { throw new Error('secret disk detail') },
+    stopLocalProject: async () => { throw new Error('private stop detail') },
+  })
+  const quit = f.quitApplication()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(f.events.length, 0)
+  finishSave()
+  await quit
+  assert.deepEqual(f.events.at(-1), ['quit'])
+  assert.equal(JSON.stringify(f.events).includes('secret'), false)
+})
+
+test('disabled persistence writes an empty exit snapshot', async () => {
+  const f = sessionLifecycleFixture({ currentSettings: { persistInstanceState: false } })
+  await f.quitApplication()
+  assert.deepEqual(f.events[0], ['save', []])
+})
+
+test('exiting during restoration stops the restore queue and retains unattempted IDs', async () => {
+  const started = []
+  let finishStart
+  const f = sessionLifecycleFixture({
+    pendingProjectRestores: new Set(['first', 'second']),
+    startLocalProject: id => { started.push(id); return new Promise(resolve => { finishStart = resolve }) },
+  })
+  const restoring = f.restoreLocalProjects()
+  await f.quitApplication()
+  finishStart()
+  await restoring
+  assert.deepEqual(started, ['first'])
+  assert.ok(f.events.find(([kind, ids]) => kind === 'save' && ids.includes('second')))
+})
+
+test('manual and automatic starts share one launch and no new launch begins while exiting', async () => {
+  let launches = 0, finish
+  const f = loadSource('electron/main.ts', {}, {
+    stoppingLocalProjects: false, startingProjects: new Map(),
+    launchLocalProject: () => { launches++; return new Promise(resolve => { finish = resolve }) },
+  }, ['startLocalProject'])
+  const automatic = f.startLocalProject('local', () => {})
+  const manual = f.startLocalProject('local', () => {})
+  assert.equal(launches, 1)
+  finish()
+  await Promise.all([automatic, manual])
+  assert.equal(f.state.startingProjects.size, 0)
+  f.state.stoppingLocalProjects = true
+  await assert.rejects(f.startLocalProject('another', () => {}), /LOCAL_START_FAILED/)
+  assert.equal(launches, 1)
+})
+
+test('minimizing or cancelling close never snapshots or stops instances', async () => {
+  for (const cancelled of [false, true]) {
+    const events = []
+    const f = loadSource('electron/main.ts', {}, {
+      isQuitting: false, closePromptInProgress: false,
+      currentSettings: { closeReminder: cancelled },
+      confirmApplicationClose: async () => false,
+      tray: {}, mainWindow: { hide: () => events.push('hide') },
+      quitApplication: async () => events.push('quit'),
+    }, ['requestApplicationClose'])
+    await f.requestApplicationClose(cancelled ? 'quit' : 'minimize')
+    assert.deepEqual(events, cancelled ? [] : ['hide'])
+  }
+})
+
+test('the project change bridge forwards lifecycle notifications and removes its listener', () => {
+  const ipc = new EventEmitter()
+  let bridge
+  loadSource('electron/preload.cts', {
+    electron: { contextBridge: { exposeInMainWorld: (_name, api) => { bridge = api } }, ipcRenderer: ipc },
+  })
+  let changed = 0
+  const remove = bridge.projects.onChanged(() => changed++)
+  ipc.emit('projects:changed', {}, 'untrusted payload')
+  assert.equal(changed, 1)
+  remove()
+  ipc.emit('projects:changed')
+  assert.equal(changed, 1)
+})
+
+test('an unsaved restore preference does not change the displayed switch on save failure', async () => {
+  const errors = []
+  const f = loadSource('src/App.vue', {}, {
+    startupSaving: { value: false }, persistInstanceState: { value: false },
+    queueSettingsSave: async () => { throw new Error('private save failure') },
+    messageHost: { value: { error: message => errors.push(message) } },
+    t: { value: { settingsSaveFailed: 'Could not save' } },
+  }, ['saveBehaviorSettings'])
+  await f.saveBehaviorSettings({ persistInstanceState: true })
+  assert.equal(f.state.persistInstanceState.value, false)
+  assert.equal(f.state.startupSaving.value, false)
+  assert.deepEqual(errors, ['Could not save'])
+})
+
+test('simultaneous update and normal exits share one snapshot write and one stop sequence', async () => {
+  let finishSave
+  const saved = []
+  const f = sessionLifecycleFixture({
+    saveProjectSession: ids => { saved.push(Array.from(ids)); return new Promise(resolve => { finishSave = resolve }) },
+  })
+  const updating = f.stopLocalProjectsForExit()
+  const closing = f.stopLocalProjectsForExit()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(saved.length, 1)
+  finishSave()
+  await Promise.all([updating, closing])
+  assert.deepEqual(f.events, [['stop', 'running']])
+})
+
+test('a normal exit snapshot restores local instances in a fresh launcher session', async () => {
+  const store = sessionStoreFixture()
+  const first = sessionLifecycleFixture({
+    launchedProjects: new Map([['local', {}]]), startingProjects: new Map(),
+    saveProjectSession: store.saveProjectSession,
+  })
+  await first.quitApplication()
+  const second = sessionLifecycleFixture({
+    loadProjectSession: store.loadProjectSession,
+    saveProjectSession: store.saveProjectSession,
+  })
+  await second.prepareProjectRestore()
+  await second.restoreLocalProjects()
+  assert.deepEqual(second.events, [['start', 'local'], ['changed']])
+  assert.deepEqual(Array.from(await store.loadProjectSession()), [])
+})
+
+test('exit during dependency installation prevents a late local process from spawning', async () => {
+  let spawns = 0
+  const f = loadSource('electron/main.ts', {}, {
+    stoppingLocalProjects: false,
+    launchedProjects: new Map(),
+    loadProjects: async () => [{ id: 'local', name: 'Test', type: 'local', projectPath: '/project' }],
+    writeLauncherLog: () => {}, getLocalProject: async () => ({ port: 5267 }),
+    getLocalWebuiUrl: () => 'http://localhost:5267', ensureLocalPortAvailable: async () => {},
+    path: path.posix, process: { platform: 'linux', env: {} }, fs: { access: async () => {} },
+    selectFastestPackageIndex: async () => 'https://pypi.org/simple/', hasUv: async () => true,
+    runProjectCommand: async () => { f.state.stoppingLocalProjects = true },
+    spawn: () => { spawns++; return new EventEmitter() },
+  }, ['launchLocalProject'])
+  await assert.rejects(f.launchLocalProject('local', () => {}), /LOCAL_START_FAILED/)
+  assert.equal(spawns, 0)
 })
