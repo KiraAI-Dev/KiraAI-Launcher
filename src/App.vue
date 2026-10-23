@@ -287,7 +287,7 @@ async function checkForUpdates() {
     applyLauncherUpdateStatus(result)
     if (!result.updateAvailable) messageHost.value?.success(aboutText.value.latest.replace('{version}', result.latestVersion))
   } catch {
-    updateCheckError.value = aboutText.value.failed
+    messageHost.value?.error(aboutText.value.failed)
   } finally {
     updateChecking.value = false
   }
