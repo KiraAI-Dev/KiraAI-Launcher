@@ -591,6 +591,7 @@ async function stopProject(id: string) {
 }
 
 async function openWebuiProject(id: string) {
+  projectError.value = ''
   try {
     await requireLauncherBridge().projects.open(id)
   } catch (error) {
@@ -599,6 +600,7 @@ async function openWebuiProject(id: string) {
 }
 
 async function openProjectFolder(id: string) {
+  projectError.value = ''
   try {
     await requireLauncherBridge().projects.openFolder(id)
   } catch (error) {
