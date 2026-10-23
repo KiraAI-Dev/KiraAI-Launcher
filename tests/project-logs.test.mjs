@@ -98,7 +98,7 @@ test('unreachable and unsupported instances do not expose response details', asy
 
 function refreshFixture() {
   const pending = []
-  const clears = []
+  const clears = [], errorToasts = []
   const subscriptions = []
   const state = {
     selectedLogSource: { value: 'launcher' }, logRequestId: 0, removeLogListener: undefined,
@@ -112,10 +112,11 @@ function refreshFixture() {
         return () => { subscription.stopped = true }
       },
     } }),
+    messageHost: { value: { error: (content) => errorToasts.push(content) } },
     getErrorMessage: () => 'read failed',
   }
   const { refreshLogs, stopLogStream, clearLogs } = loadSource('src/App.vue', {}, state, ['refreshLogs', 'stopLogStream', 'clearLogs'])
-  return { state, pending, subscriptions, clears, refresh: refreshLogs, stop: stopLogStream, clear: clearLogs }
+  return { state, pending, subscriptions, clears, errorToasts, refresh: refreshLogs, stop: stopLogStream, clear: clearLogs }
 }
 
 test('source switch clears old content and ignores late results and failures', async () => {
@@ -520,6 +521,7 @@ test('clear is launcher-only and late success or failure cannot overwrite anothe
     assert.equal(f.state.currentLog.value.content, 'instance log')
     assert.equal(f.state.logsError.value, '')
     assert.equal(f.subscriptions[0].stopped, false)
+    assert.deepEqual(f.errorToasts, [])
   }
 })
 
@@ -529,7 +531,8 @@ test('failed clear retains the displayed log and allows retry', async () => {
   f.clears[0].reject(new Error('LOG_CLEAR_FAILED'))
   await clear
   assert.equal(f.state.currentLog.value.content, 'old')
-  assert.equal(f.state.logsError.value, 'read failed')
+  assert.equal(f.state.logsError.value, '')
+  assert.deepEqual(f.errorToasts, ['read failed'])
   assert.equal(f.state.logsClearing.value, false)
   const retry = f.clear()
   assert.equal(f.state.logsError.value, '')
