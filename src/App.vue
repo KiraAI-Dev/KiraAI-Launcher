@@ -287,7 +287,7 @@ async function checkForUpdates() {
     applyLauncherUpdateStatus(result)
     if (!result.updateAvailable) messageHost.value?.success(aboutText.value.latest.replace('{version}', result.latestVersion))
   } catch {
-    updateCheckError.value = aboutText.value.failed
+    messageHost.value?.error(aboutText.value.failed)
   } finally {
     updateChecking.value = false
   }
@@ -299,7 +299,7 @@ async function installUpdate() {
   try {
     await requireLauncherBridge().updates.install()
   } catch {
-    updateCheckError.value = aboutText.value.updateFailed
+    messageHost.value?.error(aboutText.value.updateFailed)
   } finally {
     updateInstalling.value = false
   }
@@ -372,7 +372,7 @@ async function clearLogs() {
     await requireLauncherBridge().logs.clear()
     if (requestId === logRequestId && selectedLogSource.value === 'launcher') currentLog.value = { content: '' }
   } catch (error) {
-    if (requestId === logRequestId && selectedLogSource.value === 'launcher') logsError.value = getErrorMessage(error)
+    if (requestId === logRequestId && selectedLogSource.value === 'launcher') messageHost.value?.error(getErrorMessage(error))
   } finally {
     logsClearing.value = false
   }
@@ -426,7 +426,7 @@ async function installEnvironmentTool(tool: EnvironmentTool) {
     environmentTools.value = environmentTools.value.map((item) => item.name === tool.name ? installedTool : item)
     messageHost.value?.success(environmentActionsText.value.installSuccess.replace('{tool}', tool.name))
   } catch (error) {
-    environmentError.value = getErrorMessage(error)
+    messageHost.value?.error(getErrorMessage(error))
   } finally {
     environmentInstalling.value = null
   }
@@ -583,7 +583,7 @@ async function stopProject(id: string) {
     await refreshManagedProjects()
     messageHost.value?.success(projectActionText.value.stopped)
   } catch (error) {
-    projectError.value = getErrorMessage(error)
+    messageHost.value?.error(getErrorMessage(error))
   } finally {
     projectActionId.value = null
     actionInProgress.value = false
@@ -591,18 +591,20 @@ async function stopProject(id: string) {
 }
 
 async function openWebuiProject(id: string) {
+  projectError.value = ''
   try {
     await requireLauncherBridge().projects.open(id)
   } catch (error) {
-    projectError.value = getErrorMessage(error)
+    messageHost.value?.error(getErrorMessage(error))
   }
 }
 
 async function openProjectFolder(id: string) {
+  projectError.value = ''
   try {
     await requireLauncherBridge().projects.openFolder(id)
   } catch (error) {
-    projectError.value = getErrorMessage(error)
+    messageHost.value?.error(getErrorMessage(error))
   }
 }
 
@@ -732,7 +734,7 @@ async function confirmRemoveManagedProject(project: ManagedProject) {
     managedProjects.value = managedProjects.value.filter((item) => item.id !== project.id)
     startedProjectIds.value = startedProjectIds.value.filter((id) => id !== project.id)
   } catch (error) {
-    projectError.value = getErrorMessage(error)
+    messageHost.value?.error(getErrorMessage(error))
   } finally {
     actionInProgress.value = false
   }
