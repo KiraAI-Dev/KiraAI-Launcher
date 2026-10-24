@@ -51,6 +51,7 @@ export type EnvironmentToolName = 'Python' | 'uv' | 'Node.js'
 export type EnvironmentTool = {
   name: EnvironmentToolName
   installed: boolean
+  source?: 'system' | 'managed'
   version?: string
   path?: string
   installVersions: string[]

@@ -37,7 +37,7 @@ Use **New Project** to choose one of the following:
 2. **Download and deploy** — select a parent folder and project name; the launcher downloads the latest KiraAI release and registers it.
 3. **Connect a cloud instance** — enter the URL of a running KiraAI WebUI. An optional WebUI Access Token is encrypted with the operating system's secure storage before it is saved locally.
 
-For local projects, install a supported Python version and make it available on `PATH`. The **Environment** page reports whether Python, uv, and Node.js are available, and can install a missing tool using the system package manager. Select a version before installation; restart the launcher after it completes so the new command path is available.
+The **Environment** page detects Python, uv, and Node.js and downloads missing tools into the `environments` directory inside the launcher user data directory. These installations need no system package manager or administrator privileges and are available immediately. Python is a complete, independent CPython distribution from `python-build-standalone`; installing it does not install or require uv. uv and Node.js use official standalone archives. All runtime archives are checked against published SHA-256 checksums. The launcher prefers its managed runtimes and continues to recognize existing system installations. It only updates its own process environment, leaving the system PATH unchanged. Project virtual environments stay in each project under `venv`. Python downloads made by uv during project deployment are stored separately under `environments/uv-python`.
 
 ## ⚙️ Using a Project
 

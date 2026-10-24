@@ -40,6 +40,7 @@ interface LocalProjectCandidate {
 interface EnvironmentTool {
   name: 'Python' | 'uv' | 'Node.js'
   installed: boolean
+  source?: 'system' | 'managed'
   version?: string
   path?: string
   installVersions: string[]

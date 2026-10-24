@@ -7,7 +7,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { AppUpdater } from 'electron-updater'
 import { decryptAccessToken, encryptAccessToken, getInstanceRuntimeDuration, getInstanceVersion, getLocalAccessToken, getWebuiSessionToken, readJson, requestWithTimeout, verifyCloudProject } from './cloud.js'
-import { checkEnvironment, installEnvironmentTool } from './environment.js'
+import { checkEnvironment, initializeEnvironment, installEnvironmentTool } from './environment.js'
 import { getLocalProject, getLocalWebuiUrl, normalizeLocalWebuiHost, saveLocalWebuiSettings } from './local-project.js'
 import { readProjectLog } from './project-logs.js'
 import { registerProjectLogSubscriptions } from './project-log-subscriptions.js'
@@ -1066,6 +1066,7 @@ app.whenReady().then(async () => {
   } catch {
     void writeLauncherLog('WARN', 'Unable to read login startup settings')
   }
+  await initializeEnvironment()
   await prepareProjectRestore()
   configureAutoUpdater()
   ipcMain.handle('settings:startup-supported', isStartupSupported)
