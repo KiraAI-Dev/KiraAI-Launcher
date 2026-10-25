@@ -1,9 +1,10 @@
 import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import type { CloseAction, Language, LauncherSettings, ThemeColor, ThemeMode, WebuiOpenMode } from './types.js'
+import type { EnvironmentMode, CloseAction, Language, LauncherSettings, ThemeColor, ThemeMode, WebuiOpenMode } from './types.js'
 
 export const defaultSettings: LauncherSettings = {
+  environmentMode: 'auto',
   themeMode: 'system',
   themeColor: 'blue',
   language: 'zh-CN',
@@ -24,6 +25,7 @@ function settingsPath() {
 export function sanitizeSettings(value: unknown): LauncherSettings {
   const candidate = typeof value === 'object' && value !== null ? value as Partial<LauncherSettings> : {}
   return {
+    environmentMode: ['auto', 'system', 'managed'].includes(candidate.environmentMode ?? '') ? candidate.environmentMode as EnvironmentMode : defaultSettings.environmentMode,
     themeMode: ['system', 'light', 'dark'].includes(candidate.themeMode ?? '') ? candidate.themeMode as ThemeMode : defaultSettings.themeMode,
     themeColor: ['blue', 'purple', 'green', 'orange'].includes(candidate.themeColor ?? '') ? candidate.themeColor as ThemeColor : defaultSettings.themeColor,
     language: ['zh-CN', 'en-US'].includes(candidate.language ?? '') ? candidate.language as Language : defaultSettings.language,

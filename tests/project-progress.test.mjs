@@ -134,11 +134,11 @@ function deploymentFixture(failDependencies = false) {
   let healthResolve
   const health = new Promise((resolve) => { healthResolve = resolve })
   const { startLocalProject } = loadSource('electron/main.ts', {}, {
-    stoppingLocalProjects: false, startingProjects: new Map(), publishProjectChange: () => {}, launchedProjects: new Map(), loadProjects: async () => [{ id: 'local', name: 'Test', type: 'local', projectPath: '/project' }],
+    stoppingLocalProjects: false, environmentUninstalling: false, startingProjects: new Map(), publishProjectChange: () => {}, launchedProjects: new Map(), loadProjects: async () => [{ id: 'local', name: 'Test', type: 'local', projectPath: '/project' }],
     writeLauncherLog: () => {}, getLocalProject: async () => ({ port: 5267 }),
     getLocalWebuiUrl: () => 'http://localhost:5267', ensureLocalPortAvailable: async () => {},
     path: path.posix, process: { platform: 'linux', env: {} }, fs: { access: async () => {} },
-    selectFastestPackageIndex: async () => 'https://pypi.org/simple/', hasUv: async () => true,
+    selectFastestPackageIndex: async () => 'https://pypi.org/simple/', projectVenvMatchesPython: async () => true, resolveProjectEnvironment: async () => ({ python: '/selected/python', uv: '/selected/uv', env: {} }),
     runProjectCommand: async (_command, args) => { commands.push(args); if (failDependencies) throw new Error('DEPENDENCY_INSTALL_FAILED') },
     spawn: () => new EventEmitter(), waitForSpawn: async () => {}, waitForLocalWebui: () => health,
   }, ['startLocalProject', 'launchLocalProject'])

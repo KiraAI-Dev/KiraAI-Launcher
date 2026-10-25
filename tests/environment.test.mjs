@@ -7,8 +7,13 @@ import vm from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
 
-function load(file, dependencies, globals) {
-  const source = readFileSync(new URL('../' + file, import.meta.url), 'utf8')
+function load(file, dependencies, globals, names) {
+  let source = readFileSync(new URL('../' + file, import.meta.url), 'utf8')
+  if (file.endsWith('.vue')) source = source.split('<script setup lang="ts">')[1].split('</script>')[0]
+  if (names) {
+    const ast = ts.createSourceFile(file, source, ts.ScriptTarget.Latest, true)
+    source = ast.statements.filter(node => ts.isFunctionDeclaration(node) && names.includes(node.name?.text)).map(node => node.getText(ast)).join('\n') + '\nexport { ' + names.join(', ') + ' }'
+  }
   const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } })
   const exports = {}
   vm.runInNewContext(outputText, { exports, require: id => {
@@ -77,7 +82,7 @@ async function fixture(t, { platform = 'win32', arch = 'x64', pythonVersion = '3
     } },
   }, { process: { platform, arch, env } })
   const environment = load('electron/environment.ts', {
-    electron: { app: { getPath: () => root } }, 'node:path': path, './environment-install.js': installer,
+    electron: { app: { getPath: () => root } }, 'node:path': path, 'node:fs': { promises: fs }, './environment-install.js': installer,
   }, { process: { platform, arch, env } })
   return { root, env, requests, commands, state, installer, environment }
 }
@@ -90,7 +95,7 @@ test('Python installs independently without uv or a system package manager and s
   assert.equal(result.source, 'managed')
   assert.equal(result.path, path.join(f.root, 'environments', 'python', '3.11', 'python.exe'))
   assert.ok(f.requests.every(item => item.url.includes('python-build-standalone')))
-  assert.ok(f.commands.every(item => !/^(uv|winget|brew|pkexec|apt-get)$/.test(item.command)))
+  assert.ok(f.commands.every(item => !/^(winget|brew|pkexec|apt-get)$/.test(item.command) && (item.command !== 'uv' || item.args[0] === '--version')))
   assert.ok(f.commands.some(item => item.args.includes('import ensurepip, ssl, venv')))
   assert.equal((await f.environment.checkEnvironment()).find(item => item.name === 'uv').installed, false)
   f.env.PATH = '/existing/system'
@@ -222,4 +227,215 @@ test('Homebrew environments are labeled system and missing tools have no source'
   const uv = tools.find(tool => tool.name === 'uv')
   assert.equal(uv.installed, false)
   assert.equal(uv.source, undefined)
+})
+
+test('automatic selection is per tool, and global mode excludes launcher paths and restores UV variables', async t => {
+  const f = await fixture(t)
+  await f.environment.installEnvironmentTool({ name: 'uv', version: 'latest' })
+  f.state.systemUv = true
+  await f.environment.initializeEnvironment('auto')
+  let tools = await f.environment.checkEnvironment()
+  assert.equal(tools.find(tool => tool.name === 'uv').source, 'managed')
+  await f.environment.initializeEnvironment('system')
+  tools = await f.environment.checkEnvironment()
+  assert.equal(tools.find(tool => tool.name === 'uv').source, 'system')
+  assert.equal(tools.find(tool => tool.name === 'uv').managedInstalled, true)
+  assert.ok(!f.env.PATH.includes(path.join(f.root, 'environments')))
+  assert.equal(f.env.UV_PYTHON_INSTALL_DIR, undefined)
+  assert.ok(f.commands.filter(item => item.command === 'uv').every(item => !item.env.PATH.includes(path.join(f.root, 'environments'))))
+  await f.environment.initializeEnvironment('managed')
+  assert.equal((await f.environment.checkEnvironment()).find(tool => tool.name === 'uv').source, 'managed')
+  assert.equal(f.env.UV_PYTHON_INSTALL_DIR, path.join(f.root, 'environments', 'uv-python'))
+})
+
+test('launcher mode never uses global tools and can install its own copy alongside them', async t => {
+  const f = await fixture(t)
+  f.state.systemUv = true
+  await f.environment.initializeEnvironment('managed')
+  let uv = (await f.environment.checkEnvironment()).find(tool => tool.name === 'uv')
+  assert.equal(uv.installed, false)
+  assert.equal((await f.environment.resolveProjectEnvironment()).uv, undefined)
+  uv = await f.environment.installEnvironmentTool({ name: 'uv', version: 'latest' })
+  assert.equal(uv.source, 'managed')
+  assert.equal(uv.managedInstalled, true)
+})
+
+test('global mode never uses a launcher copy or installs a new tool', async t => {
+  const f = await fixture(t)
+  await f.environment.installEnvironmentTool({ name: 'uv', version: 'latest' })
+  const previousRequests = f.requests.length
+  await f.environment.initializeEnvironment('system')
+  const uv = (await f.environment.checkEnvironment()).find(tool => tool.name === 'uv')
+  assert.equal(uv.installed, false)
+  assert.equal(uv.managedInstalled, true)
+  assert.equal((await f.environment.resolveProjectEnvironment()).uv, undefined)
+  await assert.rejects(f.environment.installEnvironmentTool({ name: 'uv', version: 'latest' }), /ENVIRONMENT_GLOBAL_INSTALL_UNSUPPORTED/)
+  assert.equal(f.requests.length, previousRequests)
+})
+
+test('auto mode can mix a managed Python and global uv in one deployment snapshot', async t => {
+  const f = await fixture(t)
+  await f.environment.installEnvironmentTool({ name: 'Python', version: '3.11' })
+  f.state.systemUv = true
+  const runtime = await f.environment.resolveProjectEnvironment()
+  assert.equal(runtime.python, path.join(f.root, 'environments', 'python', '3.11', 'python.exe'))
+  assert.equal(runtime.uv, '/system/uv')
+  assert.equal(runtime.env.UV_PYTHON_DOWNLOADS, 'never')
+  await f.environment.initializeEnvironment('system')
+  assert.ok(runtime.env.PATH.includes(path.join(f.root, 'environments', 'python', '3.11')))
+})
+
+test('uninstall deletes only the named managed tool and auto mode falls back to a global copy', async t => {
+  const f = await fixture(t)
+  await f.environment.installEnvironmentTool({ name: 'Python', version: '3.11' })
+  const uv = await f.environment.installEnvironmentTool({ name: 'uv', version: 'latest' })
+  const globalFile = path.join(f.root, 'global-tool.txt')
+  const projectFile = path.join(f.root, 'project', 'venv', 'keep.txt')
+  await fs.writeFile(globalFile, 'global tool')
+  await fs.mkdir(path.dirname(projectFile), { recursive: true })
+  await fs.writeFile(projectFile, 'project virtual environment')
+  f.state.systemUv = true
+  const result = await f.environment.uninstallEnvironmentTool({ name: 'uv', path: globalFile })
+  const selected = result.find(tool => tool.name === 'uv')
+  assert.equal(selected.source, 'system')
+  assert.equal(selected.managedInstalled, false)
+  await assert.rejects(fs.access(uv.path))
+  assert.equal(await fs.readFile(globalFile, 'utf8'), 'global tool')
+  assert.equal(await fs.readFile(projectFile, 'utf8'), 'project virtual environment')
+  assert.equal(result.find(tool => tool.name === 'Python').source, 'managed')
+  assert.ok(!f.env.PATH.split(path.delimiter).includes(path.dirname(uv.path)))
+})
+
+test('uninstall removes all managed Python versions, remains missing in managed mode, and permits reinstall', async t => {
+  const f = await fixture(t)
+  await f.environment.initializeEnvironment('managed')
+  await f.environment.installEnvironmentTool({ name: 'Python', version: '3.11' })
+  const other = path.join(f.root, 'environments', 'python', '3.12')
+  await fs.mkdir(other, { recursive: true })
+  await fs.writeFile(path.join(other, 'python.exe'), 'another managed version')
+  const result = await f.environment.uninstallEnvironmentTool({ name: 'Python' })
+  assert.equal(result.find(tool => tool.name === 'Python').installed, false)
+  await assert.rejects(fs.access(other))
+  assert.equal((await f.environment.installEnvironmentTool({ name: 'Python', version: '3.11' })).source, 'managed')
+})
+
+test('uninstall rejects arbitrary names and refuses junctions outside the managed root', async t => {
+  const f = await fixture(t)
+  await assert.rejects(f.environment.uninstallEnvironmentTool({ name: '../outside' }), /ENVIRONMENT_INSTALL_INVALID/)
+  const external = path.join(f.root, 'external')
+  const target = path.join(f.root, 'environments', 'uv')
+  await fs.mkdir(external)
+  await fs.writeFile(path.join(external, 'keep.txt'), 'untouched')
+  await fs.mkdir(path.dirname(target))
+  await fs.symlink(external, target, 'junction')
+  await assert.rejects(f.environment.uninstallEnvironmentTool({ name: 'uv' }), /ENVIRONMENT_UNINSTALL_FAILED/)
+  assert.equal(await fs.readFile(path.join(external, 'keep.txt'), 'utf8'), 'untouched')
+})
+
+test('install and uninstall are serialized so a queued removal cannot be undone by a late install', async t => {
+  const f = await fixture(t)
+  await Promise.all([
+    f.environment.installEnvironmentTool({ name: 'uv', version: 'latest' }),
+    f.environment.uninstallEnvironmentTool({ name: 'uv' }),
+  ])
+  assert.equal((await f.environment.checkEnvironment()).find(tool => tool.name === 'uv').managedInstalled, false)
+})
+
+test('environment mode defaults to auto, rejects invalid settings, and persists all choices', async t => {
+  const f = await fixture(t)
+  const settings = load('electron/settings.ts', { electron: { app: { getPath: () => f.root } }, 'node:fs': { promises: fs }, 'node:path': path }, {})
+  assert.equal(settings.sanitizeSettings({}).environmentMode, 'auto')
+  assert.equal(settings.sanitizeSettings({ environmentMode: 'invalid' }).environmentMode, 'auto')
+  for (const environmentMode of ['auto', 'system', 'managed']) {
+    await settings.saveSettings({ environmentMode })
+    assert.equal((await settings.loadSettings()).environmentMode, environmentMode)
+  }
+})
+
+test('runtime uninstall refuses active deployments, blocks new starts until complete, and releases the guard on failure', async () => {
+  let finish
+  const running = new Map([['project', {}]])
+  const globals = {
+    environmentUninstalling: false, launchedProjects: running, startingProjects: new Map(), stoppingLocalProjects: false,
+    uninstallEnvironmentTool: () => new Promise(resolve => { finish = resolve }),
+  }
+  const api = load('electron/main.ts', {}, globals, ['uninstallLauncherEnvironment', 'startLocalProject'])
+  await assert.rejects(api.uninstallLauncherEnvironment({ name: 'Python' }), /ENVIRONMENT_IN_USE/)
+  running.clear()
+  const pending = api.uninstallLauncherEnvironment({ name: 'Python' })
+  await assert.rejects(api.startLocalProject('project', () => {}), /ENVIRONMENT_IN_USE/)
+  finish([])
+  await pending
+  const failure = load('electron/main.ts', {}, { ...globals, uninstallEnvironmentTool: async () => { throw new Error('ENVIRONMENT_UNINSTALL_FAILED') } }, ['uninstallLauncherEnvironment'])
+  await assert.rejects(failure.uninstallLauncherEnvironment({ name: 'Python' }), /ENVIRONMENT_UNINSTALL_FAILED/)
+  // A second attempt reaches the backend again instead of being trapped by the busy flag.
+  await assert.rejects(failure.uninstallLauncherEnvironment({ name: 'Python' }), /ENVIRONMENT_UNINSTALL_FAILED/)
+})
+
+test('project virtual environments are reused only with the selected Python base', async () => {
+  for (const [existing, selected, expected] of [['/managed/python', '/managed/python', true], ['/managed/python', '/system/python', false]]) {
+    const environments = []
+    const api = load('electron/main.ts', {}, {
+      fs: { access: async () => {} }, path, process: { platform: 'linux' },
+      runCommand: async (command, args, timeout, env) => { environments.push(env); return { stdout: command === '/venv/python' ? existing : selected } },
+    }, ['projectVenvMatchesPython'])
+    const env = { PATH: '/chosen/bin' }
+    assert.equal(await api.projectVenvMatchesPython('/venv/python', '/selected/python', env), expected)
+    assert.ok(environments.every(value => value === env))
+  }
+})
+
+test('saving a mode applies it before persistence and restores the previous mode when persistence fails', async () => {
+  for (const diskFails of [false, true]) {
+    const events = []
+    const api = load('electron/main.ts', {}, {
+      currentSettings: { environmentMode: 'auto', launchAtLogin: false }, sanitizeSettings: value => value,
+      initializeEnvironment: async mode => events.push(mode),
+      saveSettings: async value => { events.push('persist'); if (diskFails) throw new Error('private disk error'); return value },
+      applyLauncherUpdateSettings: () => {}, updateTrayMenu: () => {},
+    }, ['saveLauncherSettings'])
+    const pending = api.saveLauncherSettings({ environmentMode: 'managed', launchAtLogin: false })
+    if (diskFails) {
+      await assert.rejects(pending, /SETTINGS_SAVE_FAILED/)
+      assert.deepEqual(events, ['managed', 'persist', 'auto'])
+    } else {
+      assert.equal((await pending).environmentMode, 'managed')
+      assert.deepEqual(events, ['managed', 'persist'])
+    }
+  }
+})
+
+test('missing selected Python cannot silently use an existing project venv from another source', async () => {
+  const api = load('electron/main.ts', {}, {
+    launchedProjects: new Map(), loadProjects: async () => [{ id: 'local', name: 'Project', type: 'local', projectPath: '/project' }],
+    writeLauncherLog: () => {}, getLocalProject: async () => ({ port: 5267 }), getLocalWebuiUrl: () => '', ensureLocalPortAvailable: async () => {},
+    path, process: { platform: 'linux' }, DEFAULT_PYTHON_PACKAGE_INDEX_URL: 'https://pypi.org/simple/', selectFastestPackageIndex: async () => undefined,
+    resolveProjectEnvironment: async () => ({ python: undefined, uv: undefined, env: {} }),
+  }, ['launchLocalProject'])
+  await assert.rejects(api.launchLocalProject('local', () => {}), /PYTHON_UNAVAILABLE/)
+})
+
+test('venv creation and dependency installation use the selected executable paths and a single environment snapshot', async () => {
+  for (const uv of ['/selected/uv', undefined]) {
+    const commands = []
+    const env = { PATH: '/selected/bin', UV_PYTHON_DOWNLOADS: 'never' }
+    const api = load('electron/main.ts', {}, {
+      launchedProjects: new Map(), loadProjects: async () => [{ id: 'local', name: 'Project', type: 'local', projectPath: '/project' }],
+      writeLauncherLog: () => {}, getLocalProject: async () => ({ port: 5267 }), getLocalWebuiUrl: () => '', ensureLocalPortAvailable: async () => {},
+      path: path.posix, process: { platform: 'linux' }, selectFastestPackageIndex: async () => 'https://pypi.org/simple/',
+      resolveProjectEnvironment: async () => ({ python: '/selected/python', uv, env }), projectVenvMatchesPython: async () => false,
+      runProjectCommand: async (command, args, cwd, error, childEnv) => {
+        commands.push({ command, args: [...args], env: childEnv })
+        if (args.includes('pip')) throw new Error('STOP_AFTER_SETUP')
+      },
+    }, ['launchLocalProject'])
+    await assert.rejects(api.launchLocalProject('local', () => {}), /STOP_AFTER_SETUP/)
+    assert.equal(commands[0].command, uv ?? '/selected/python')
+    assert.ok(commands[0].args.includes('--clear'))
+    if (uv) {
+      assert.equal(commands[0].args[commands[0].args.indexOf('--python') + 1], '/selected/python')
+      assert.ok(commands[0].args.includes('--no-python-downloads'))
+    }
+    assert.ok(commands.every(command => command.env === env))
+  }
 })
