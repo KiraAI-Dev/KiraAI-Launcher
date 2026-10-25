@@ -61,6 +61,7 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
   },
   environment: {
     check: () => ipcRenderer.invoke('environment:check'),
+    uninstall: (value: { name: 'Python' | 'uv' | 'Node.js' }) => ipcRenderer.invoke('environment:uninstall', value),
     install: (value: { name: 'Python' | 'uv' | 'Node.js'; version: string }) => ipcRenderer.invoke('environment:install', value),
   },
   logs: {

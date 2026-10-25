@@ -7,7 +7,7 @@ import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { AppUpdater } from 'electron-updater'
 import { decryptAccessToken, encryptAccessToken, getInstanceRuntimeDuration, getInstanceVersion, getLocalAccessToken, getWebuiSessionToken, readJson, requestWithTimeout, verifyCloudProject } from './cloud.js'
-import { checkEnvironment, installEnvironmentTool } from './environment.js'
+import { checkEnvironment, initializeEnvironment, installEnvironmentTool, resolveProjectEnvironment, uninstallEnvironmentTool } from './environment.js'
 import { getLocalProject, getLocalWebuiUrl, normalizeLocalWebuiHost, saveLocalWebuiSettings } from './local-project.js'
 import { readProjectLog } from './project-logs.js'
 import { registerProjectLogSubscriptions } from './project-log-subscriptions.js'
@@ -63,6 +63,7 @@ let mainWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let isQuitting = false
 let stoppingLocalProjects = false
+let environmentUninstalling = false
 let localProjectsStopPromise: Promise<void> | null = null
 let closePromptInProgress = false
 let updateCheckPromise: Promise<LauncherUpdateCheck> | null = null
@@ -501,9 +502,9 @@ function createProjectProgressReporter(event: Electron.IpcMainInvokeEvent, reque
   }
 }
 
-function runCommand(command: string, args: string[], timeout = 8000): Promise<{ stdout: string; stderr: string }> {
+function runCommand(command: string, args: string[], timeout = 8000, env = process.env): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(command, args, { windowsHide: true, timeout }, (error, stdout, stderr) => {
+    execFile(command, args, { windowsHide: true, timeout, env }, (error, stdout, stderr) => {
       if (error) reject(error)
       else resolve({ stdout: stdout.trim(), stderr: stderr.trim() })
     })
@@ -512,6 +513,7 @@ function runCommand(command: string, args: string[], timeout = 8000): Promise<{ 
 
 async function startLocalProject(id: string, report: ProjectProgressReporter): Promise<void> {
   if (stoppingLocalProjects) throw new Error('LOCAL_START_FAILED')
+  if (environmentUninstalling) throw new Error('ENVIRONMENT_IN_USE')
   const existing = startingProjects.get(id)
   if (existing) return existing
   const task = launchLocalProject(id, report)
@@ -537,32 +539,30 @@ async function launchLocalProject(id: string, report: ProjectProgressReporter): 
   const detectedPackageIndex = await selectFastestPackageIndex()
   const packageIndex = detectedPackageIndex ?? DEFAULT_PYTHON_PACKAGE_INDEX_URL
   report({ stage: 'venv' })
-  let useUv = await hasUv()
-  try {
-    await fs.access(venvPythonPath)
-  } catch {
+  const runtime = await resolveProjectEnvironment()
+  let useUv = Boolean(runtime.uv)
+  if (!runtime.python) throw new Error('PYTHON_UNAVAILABLE')
+  if (!await projectVenvMatchesPython(venvPythonPath, runtime.python, runtime.env)) {
     if (useUv && detectedPackageIndex) {
       try {
-        await runProjectCommand('uv', ['venv', 'venv', '--python', '3.11', '--seed', '--index-url', packageIndex], project.projectPath, 'VENV_CREATE_FAILED')
+        await runProjectCommand(runtime.uv!, ['venv', 'venv', '--clear', '--python', runtime.python, '--no-python-downloads', '--seed', '--index-url', packageIndex], project.projectPath, 'VENV_CREATE_FAILED', runtime.env)
       } catch {
         useUv = false
-        const hostPython = await findHostPython()
-        await runProjectCommand(hostPython.command, [...hostPython.args, '-m', 'venv', '--clear', 'venv'], project.projectPath, 'VENV_CREATE_FAILED')
+        await runProjectCommand(runtime.python, ['-m', 'venv', '--clear', 'venv'], project.projectPath, 'VENV_CREATE_FAILED', runtime.env)
       }
     } else {
       useUv = false
-      const hostPython = await findHostPython()
-      await runProjectCommand(hostPython.command, [...hostPython.args, '-m', 'venv', 'venv'], project.projectPath, 'VENV_CREATE_FAILED')
+      await runProjectCommand(runtime.python, ['-m', 'venv', '--clear', 'venv'], project.projectPath, 'VENV_CREATE_FAILED', runtime.env)
     }
   }
 
   report({ stage: 'dependencies' })
   if (useUv) {
-    await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '--upgrade', 'pip', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
-    await runProjectCommand('uv', ['pip', 'install', '--python', venvPythonPath, '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+    await runProjectCommand(runtime.uv!, ['pip', 'install', '--python', venvPythonPath, '--upgrade', 'pip', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED', runtime.env)
+    await runProjectCommand(runtime.uv!, ['pip', 'install', '--python', venvPythonPath, '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED', runtime.env)
   } else {
-    await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
-    await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED')
+    await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '--upgrade', 'pip', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED', runtime.env)
+    await runProjectCommand(venvPythonPath, ['-m', 'pip', 'install', '--disable-pip-version-check', '-r', 'requirements.txt', '--index-url', packageIndex], project.projectPath, 'DEPENDENCY_INSTALL_FAILED', runtime.env)
   }
 
   if (stoppingLocalProjects) throw new Error('LOCAL_START_FAILED')
@@ -570,7 +570,7 @@ async function launchLocalProject(id: string, report: ProjectProgressReporter): 
   const child = spawn(venvPythonPath, ['main.py', ...project.launchArgs ?? []], {
     cwd: project.projectPath,
     env: {
-      ...process.env,
+      ...runtime.env,
       ...project.environmentVariables,
       KIRA_LAUNCH_SOURCE: 'launcher',
     },
@@ -583,8 +583,9 @@ async function launchLocalProject(id: string, report: ProjectProgressReporter): 
     publishProjectChange()
     void writeLauncherLog(code === 0 ? 'INFO' : 'WARN', 'Local project process exited', { project: project.name, code, signal })
   })
-  child.once('error', () => {
-    launchedProjects.delete(id)
+  child.on('error', () => {
+    // A failed termination can emit an error while the process is still alive.
+    if (typeof child.pid !== 'number') launchedProjects.delete(id)
     publishProjectChange()
     void writeLauncherLog('ERROR', 'Local project process failed', { project: project.name })
   })
@@ -612,7 +613,7 @@ async function stopLocalProject(id: string): Promise<void> {
   pendingProjectRestores.delete(id)
   const child = launchedProjects.get(id)
   if (!child) return
-  launchedProjects.delete(id)
+  // Keep the runtime in use until the process exits, including failed or timed-out stops.
   if (typeof child.pid !== 'number') throw new Error('LOCAL_STOP_FAILED')
 
   const project = (await loadProjects()).find((item) => item.id === id)
@@ -632,7 +633,7 @@ async function stopLocalProject(id: string): Promise<void> {
     }
   }
 
-  if (child.exitCode !== null) return
+  if (child.exitCode !== null || child.signalCode !== null) return
   if (process.platform === 'win32') {
     await runProjectCommand('taskkill', ['/pid', String(child.pid), '/t', '/f'], process.cwd(), 'LOCAL_STOP_FAILED')
   } else if (!child.kill('SIGTERM')) {
@@ -662,7 +663,7 @@ async function requestGracefulLocalShutdown(
 
 function waitForProcessExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (child.exitCode !== null) {
+    if (child.exitCode !== null || child.signalCode !== null) {
       resolve()
       return
     }
@@ -686,17 +687,6 @@ function waitForProcessExit(child: ReturnType<typeof spawn>, timeoutMs: number):
     child.once('exit', onExit)
     child.once('error', onError)
   })
-}
-
-type PythonCommand = { command: string; args: string[] }
-
-async function hasUv(): Promise<boolean> {
-  try {
-    await runCommand('uv', ['--version'])
-    return true
-  } catch {
-    return false
-  }
 }
 
 async function selectFastestPackageIndex(): Promise<string | undefined> {
@@ -749,24 +739,25 @@ async function measurePackageIndexSpeed(url: PackageIndexProbe['url']): Promise<
   }
 }
 
-async function findHostPython(): Promise<PythonCommand> {
-  const candidates: PythonCommand[] = process.platform === 'win32'
-    ? [{ command: 'python', args: [] }, { command: 'py', args: ['-3'] }]
-    : [{ command: 'python3', args: [] }, { command: 'python', args: [] }]
-  for (const candidate of candidates) {
-    try {
-      await runCommand(candidate.command, [...candidate.args, '--version'])
-      return candidate
-    } catch {
-      // Try the next supported Python launcher.
-    }
+async function projectVenvMatchesPython(venvPython: string, selectedPython: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  try {
+    await fs.access(venvPython)
+    const args = ['-I', '-c', 'import sys; print(sys.base_prefix)']
+    const [existing, selected] = await Promise.all([
+      runCommand(venvPython, args, 8000, env),
+      runCommand(selectedPython, args, 8000, env),
+    ])
+    if (!existing.stdout || !selected.stdout) return false
+    const normalize = (value: string) => process.platform === 'win32' ? path.resolve(value).toLowerCase() : path.resolve(value)
+    return normalize(existing.stdout) === normalize(selected.stdout)
+  } catch {
+    return false
   }
-  throw new Error('PYTHON_UNAVAILABLE')
 }
 
-function runProjectCommand(command: string, args: string[], cwd: string, errorCode: string): Promise<void> {
+function runProjectCommand(command: string, args: string[], cwd: string, errorCode: string, env: NodeJS.ProcessEnv = process.env): Promise<void> {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, windowsHide: true, stdio: 'ignore' })
+    const child = spawn(command, args, { cwd, env, windowsHide: true, stdio: 'ignore' })
     let settled = false
     const finish = (error?: Error) => {
       if (settled) return
@@ -1023,14 +1014,28 @@ function createWindow(show = true) {
   else window.loadFile(path.join(__dirname, '../dist/index.html'))
 }
 
+async function uninstallLauncherEnvironment(value: unknown) {
+  if (environmentUninstalling || launchedProjects.size > 0 || startingProjects.size > 0) throw new Error('ENVIRONMENT_IN_USE')
+  environmentUninstalling = true
+  try {
+    return await uninstallEnvironmentTool(value)
+  } finally {
+    environmentUninstalling = false
+  }
+}
+
 async function saveLauncherSettings(value: unknown): Promise<LauncherSettings> {
   const previousSettings = currentSettings
   const nextSettings = sanitizeSettings(value)
   const startupChanged = previousSettings.launchAtLogin !== nextSettings.launchAtLogin
   try {
     if (startupChanged) await setLaunchAtLogin(nextSettings.launchAtLogin)
+    if (nextSettings.environmentMode !== previousSettings.environmentMode) await initializeEnvironment(nextSettings.environmentMode)
     currentSettings = await saveSettings(nextSettings)
   } catch {
+    if (nextSettings.environmentMode !== previousSettings.environmentMode) {
+      try { await initializeEnvironment(previousSettings.environmentMode) } catch { /* Preserve the save error. */ }
+    }
     if (startupChanged) {
       try { await setLaunchAtLogin(previousSettings.launchAtLogin) } catch { /* Keep the original save failure. */ }
     }
@@ -1066,6 +1071,7 @@ app.whenReady().then(async () => {
   } catch {
     void writeLauncherLog('WARN', 'Unable to read login startup settings')
   }
+  await initializeEnvironment(currentSettings.environmentMode)
   await prepareProjectRestore()
   configureAutoUpdater()
   ipcMain.handle('settings:startup-supported', isStartupSupported)
@@ -1159,6 +1165,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('updates:install', installLauncherUpdate)
   ipcMain.handle('updates:open-release-link', (_event, value: unknown) => openLauncherReleaseLink(value))
   ipcMain.handle('environment:check', checkEnvironment)
+  ipcMain.handle('environment:uninstall', (_event, value: unknown) => uninstallLauncherEnvironment(value))
   ipcMain.handle('environment:install', async (_event, value: unknown) => {
     try {
       const tool = await installEnvironmentTool(value)

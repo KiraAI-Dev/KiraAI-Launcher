@@ -1,6 +1,7 @@
 type ProjectProgress = import('../electron/types').ProjectProgress
 
 interface LauncherSettings {
+  environmentMode: 'auto' | 'system' | 'managed'
   themeMode: 'system' | 'light' | 'dark'
   themeColor: 'blue' | 'purple' | 'green' | 'orange'
   language: 'zh-CN' | 'en-US'
@@ -40,6 +41,8 @@ interface LocalProjectCandidate {
 interface EnvironmentTool {
   name: 'Python' | 'uv' | 'Node.js'
   installed: boolean
+  managedInstalled: boolean
+  source?: 'system' | 'managed'
   version?: string
   path?: string
   installVersions: string[]
@@ -110,6 +113,7 @@ interface Window {
     }
     environment: {
       check: () => Promise<EnvironmentTool[]>
+      uninstall: (value: { name: EnvironmentTool['name'] }) => Promise<EnvironmentTool[]>
       install: (value: { name: EnvironmentTool['name']; version: string }) => Promise<EnvironmentTool>
     }
     logs: {

@@ -19,6 +19,8 @@ export type ProjectRelease = {
   prerelease: boolean
 }
 
+export type EnvironmentMode = 'auto' | 'system' | 'managed'
+
 export type ThemeMode = 'system' | 'light' | 'dark'
 export type ThemeColor = 'blue' | 'purple' | 'green' | 'orange'
 export type Language = 'zh-CN' | 'en-US'
@@ -51,6 +53,8 @@ export type EnvironmentToolName = 'Python' | 'uv' | 'Node.js'
 export type EnvironmentTool = {
   name: EnvironmentToolName
   installed: boolean
+  managedInstalled: boolean
+  source?: 'system' | 'managed'
   version?: string
   path?: string
   installVersions: string[]
@@ -104,6 +108,7 @@ export type LauncherLog = {
 }
 
 export type LauncherSettings = {
+  environmentMode: EnvironmentMode
   themeMode: ThemeMode
   themeColor: ThemeColor
   language: Language

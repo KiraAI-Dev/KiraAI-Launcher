@@ -37,8 +37,11 @@ Use **New Project** to choose one of the following:
 2. **Download and deploy** — select a parent folder and project name; the launcher downloads the latest KiraAI release and registers it.
 3. **Connect a cloud instance** — enter the URL of a running KiraAI WebUI. An optional WebUI Access Token is encrypted with the operating system's secure storage before it is saved locally.
 
-For local projects, install a supported Python version and make it available on `PATH`. The **Environment** page reports whether Python, uv, and Node.js are available, and can install a missing tool using the system package manager. Select a version before installation; restart the launcher after it completes so the new command path is available.
+The **Environment** page detects Python, uv, and Node.js and downloads missing tools into the `environments` directory inside the launcher user data directory. No system package manager or administrator privileges are needed. Python is installed independently of uv; all runtime archives are checked against published SHA-256 checksums.
 
+In **Settings → Runtime environment**, choose **Automatic**, **Global environment**, or **Launcher environment**. Automatic prefers a launcher-managed installation for each tool and falls back to an existing global installation. The other modes use only the selected source. Global mode uses existing installations; switch to Automatic or Launcher environment to download missing tools. The environment page shows the selected source and lets you uninstall launcher-managed tools after local instances and deployments have stopped. Uninstalling removes all launcher-managed versions of that tool and leaves global tools and project files intact.
+
+The selected tools are available immediately without modifying the system PATH. If a project virtual environment uses a different Python than the newly selected one, the next deployment recreates that virtual environment and reinstalls dependencies.
 ## ⚙️ Using a Project
 
 Select a project from **Projects** and use its actions to:

@@ -248,7 +248,7 @@ test('queued UI saves preserve startup preferences when appearance changes concu
   let finishFirst
   const f = loadSource('src/App.vue', {}, {
     settingsSaveQueue: Promise.resolve(),
-    themeMode: ref('system'), themeColor: ref('blue'), language: ref('zh-CN'), webuiOpenMode: ref('launcher'),
+    environmentMode: ref('auto'), themeMode: ref('system'), themeColor: ref('blue'), language: ref('zh-CN'), webuiOpenMode: ref('launcher'),
     closeAction: ref('minimize'), closeReminder: ref(true), autoUpdate: ref(true), autoDownloadUpdate: ref(true),
     launchAtLogin: ref(false), startMinimized: ref(false), persistInstanceState: ref(false),
     requireLauncherBridge: () => ({ settings: { save: async settings => {
@@ -324,7 +324,7 @@ function sessionLifecycleFixture(overrides = {}) {
   const events = []
   const f = loadSource('electron/main.ts', {}, {
     currentSettings: { persistInstanceState: true },
-    settingsSaveQueue: Promise.resolve(), stoppingLocalProjects: false, isQuitting: false, localProjectsStopPromise: null,
+    settingsSaveQueue: Promise.resolve(), stoppingLocalProjects: false, environmentUninstalling: false, isQuitting: false, localProjectsStopPromise: null,
     launchedProjects: new Map([['running', {}]]), startingProjects: new Map([['starting', {}]]),
     pendingProjectRestores: new Set(),
     loadProjectSession: async () => ['local', 'local', 'cloud', 'removed'],
@@ -431,7 +431,7 @@ test('exiting during restoration stops the restore queue and retains unattempted
 test('manual and automatic starts share one launch and no new launch begins while exiting', async () => {
   let launches = 0, finish
   const f = loadSource('electron/main.ts', {}, {
-    stoppingLocalProjects: false, startingProjects: new Map(),
+    stoppingLocalProjects: false, environmentUninstalling: false, startingProjects: new Map(),
     launchLocalProject: () => { launches++; return new Promise(resolve => { finish = resolve }) },
   }, ['startLocalProject'])
   const automatic = f.startLocalProject('local', () => {})
@@ -524,13 +524,13 @@ test('a normal exit snapshot restores local instances in a fresh launcher sessio
 test('exit during dependency installation prevents a late local process from spawning', async () => {
   let spawns = 0
   const f = loadSource('electron/main.ts', {}, {
-    stoppingLocalProjects: false,
+    stoppingLocalProjects: false, environmentUninstalling: false,
     launchedProjects: new Map(),
     loadProjects: async () => [{ id: 'local', name: 'Test', type: 'local', projectPath: '/project' }],
     writeLauncherLog: () => {}, getLocalProject: async () => ({ port: 5267 }),
     getLocalWebuiUrl: () => 'http://localhost:5267', ensureLocalPortAvailable: async () => {},
     path: path.posix, process: { platform: 'linux', env: {} }, fs: { access: async () => {} },
-    selectFastestPackageIndex: async () => 'https://pypi.org/simple/', hasUv: async () => true,
+    selectFastestPackageIndex: async () => 'https://pypi.org/simple/', projectVenvMatchesPython: async () => true, resolveProjectEnvironment: async () => ({ python: '/selected/python', uv: '/selected/uv', env: {} }),
     runProjectCommand: async () => { f.state.stoppingLocalProjects = true },
     spawn: () => { spawns++; return new EventEmitter() },
   }, ['launchLocalProject'])

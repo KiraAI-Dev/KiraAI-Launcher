@@ -108,6 +108,8 @@ const environmentChecking = ref(false)
 const environmentInstalling = ref<EnvironmentTool['name'] | null>(null)
 const environmentSelectedVersions = ref<Partial<Record<EnvironmentTool['name'], string>>>({})
 const environmentError = ref('')
+const environmentMode = ref<LauncherSettings['environmentMode']>('auto')
+const environmentModeSaving = ref(false)
 const projectError = ref('')
 const closeReminder = ref(true)
 const persistInstanceState = ref(false)
@@ -161,6 +163,7 @@ const settingsMenu = computed<MenuOption[]>(() => [
     ...(updateAvailable.value ? { extra: () => h('span', { class: 'about-update-dot', 'aria-hidden': 'true' }) } : {}),
   },
 ])
+const environmentModeOptions = computed(() => (['auto', 'system', 'managed'] as const).map(value => ({ value, label: t.value.environmentPreferences[value] })))
 const languageOptions = computed(() => [{ label: t.value.chinese, value: 'zh-CN' }, { label: t.value.english, value: 'en-US' }])
 const themeOptions = computed(() => [{ label: t.value.system, value: 'system' }, { label: t.value.light, value: 'light' }, { label: t.value.dark, value: 'dark' }])
 const colorOptions = computed(() => (Object.keys(palettes) as Array<keyof typeof palettes>).map((value) => ({ label: t.value[value], value })))
@@ -408,6 +411,41 @@ async function refreshLogs() {
   }
 }
 
+async function saveEnvironmentMode(mode: LauncherSettings['environmentMode']) {
+  if (environmentModeSaving.value || environmentInstalling.value !== null) return
+  environmentModeSaving.value = true
+  try {
+    await queueSettingsSave({ environmentMode: mode })
+    await refreshEnvironment()
+  } catch {
+    messageHost.value?.error(t.value.settingsSaveFailed)
+  } finally {
+    environmentModeSaving.value = false
+  }
+}
+
+function confirmEnvironmentUninstall(tool: EnvironmentTool) {
+  if (!tool.managedInstalled || environmentInstalling.value !== null || !dialogHost.value) return
+  dialogHost.value.warning({
+    title: environmentActionsText.value.uninstall,
+    content: environmentActionsText.value.uninstallConfirm.replace('{tool}', tool.name),
+    positiveText: environmentActionsText.value.uninstall,
+    negativeText: t.value.cancel,
+    onPositiveClick: async () => {
+      environmentInstalling.value = tool.name
+      try {
+        environmentTools.value = await requireLauncherBridge().environment.uninstall({ name: tool.name })
+        messageHost.value?.success(environmentActionsText.value.uninstallSuccess.replace('{tool}', tool.name))
+      } catch (error) {
+        messageHost.value?.error(getErrorMessage(error))
+        return false
+      } finally {
+        environmentInstalling.value = null
+      }
+    },
+  })
+}
+
 function environmentVersionOptions(tool: EnvironmentTool) {
   return tool.installVersions.map((version) => ({ label: version, value: version }))
 }
@@ -417,7 +455,7 @@ function isEnvironmentInstalling(tool: EnvironmentTool) {
 }
 
 async function installEnvironmentTool(tool: EnvironmentTool) {
-  if (tool.installed || environmentChecking.value || isEnvironmentInstalling(tool)) return
+  if (tool.installed || environmentMode.value === 'system' || environmentChecking.value || environmentInstalling.value !== null) return
   const version = environmentSelectedVersions.value[tool.name] ?? tool.defaultInstallVersion
   environmentInstalling.value = tool.name
   environmentError.value = ''
@@ -748,6 +786,7 @@ async function restoreSettings() {
     themeColor.value = savedSettings.themeColor
     language.value = savedSettings.language
     webuiOpenMode.value = savedSettings.webuiOpenMode
+    environmentMode.value = savedSettings.environmentMode
     closeAction.value = savedSettings.closeAction
     closeReminder.value = savedSettings.closeReminder
     persistInstanceState.value = savedSettings.persistInstanceState
@@ -759,9 +798,10 @@ async function restoreSettings() {
   settingsReady.value = true
 }
 
-function queueSettingsSave(overrides: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized' | 'persistInstanceState'>> = {}) {
+function queueSettingsSave(overrides: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized' | 'persistInstanceState' | 'environmentMode'>> = {}) {
   const save = settingsSaveQueue.then(async () => {
     const saved = await requireLauncherBridge().settings.save({
+      environmentMode: environmentMode.value,
       themeMode: themeMode.value,
       themeColor: themeColor.value,
       language: language.value,
@@ -775,6 +815,7 @@ function queueSettingsSave(overrides: Partial<Pick<LauncherSettings, 'launchAtLo
       startMinimized: startMinimized.value,
       ...overrides,
     })
+    environmentMode.value = saved.environmentMode
     launchAtLogin.value = saved.launchAtLogin
     startMinimized.value = saved.startMinimized
     persistInstanceState.value = saved.persistInstanceState
@@ -880,7 +921,7 @@ onBeforeUnmount(() => {
             </n-grid>
           </n-space></template>
           <template v-else-if="activeView === 'projects'"><n-space vertical :size="24"><div class="page-heading"><div><h1>{{ t.projects }}</h1><p>{{ t.manageProjects }}</p></div><n-space><n-button :loading="projectsRefreshing" @click="refreshProjectRuntime"><template #icon><n-icon :component="RefreshOutline" /></template>{{ t.refresh }}</n-button><n-button type="primary" @click="openNewProjectModal()"><template #icon><n-icon :component="AddOutline" /></template>{{ t.newProject }}</n-button></n-space></div><n-alert v-if="projectError" type="error" :title="t.operationFailed" closable @close="projectError = ''">{{ projectError }}</n-alert><n-card><n-empty v-if="!managedProjects.length" :description="t.noManagedProjects"><template #extra><n-text depth="3">{{ t.noManagedProjectsSub }}</n-text></template><n-button type="primary" @click="openNewProjectModal()">{{ t.newProject }}</n-button></n-empty><n-data-table v-else class="managed-project-table" :columns="managedProjectColumns" :data="managedProjects" table-layout="fixed" :bordered="false" :single-line="false" :scroll-x="1000" /></n-card></n-space></template>
-          <template v-else-if="activeView === 'environment'"><n-space vertical :size="24" class="environment-page"><div class="page-heading"><div><h1>{{ t.environment }}</h1><p>{{ t.environmentSub }}</p></div><n-button :loading="environmentChecking" :disabled="environmentInstalling !== null" @click="refreshEnvironment">{{ environmentChecking ? t.checking : t.refresh }}</n-button></div><n-alert v-if="environmentError" type="error" :title="t.operationFailed" closable @close="environmentError = ''">{{ environmentError }}</n-alert><n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen" item-responsive><n-grid-item v-for="tool in environmentTools" :key="tool.name" span="3 m:1"><n-card size="small" class="environment-card"><n-space vertical :size="16"><n-space justify="space-between" align="center"><n-space align="center"><img class="environment-tool-icon" :src="environmentIcons[tool.name]" alt="" width="24" height="24" /><strong>{{ tool.name }}</strong></n-space><n-tag :type="tool.installed ? 'success' : 'error'" size="small" :bordered="false">{{ tool.installed ? t.installed : t.notInstalled }}</n-tag></n-space><n-text depth="3">{{ tool.version || '—' }}</n-text><div class="environment-path"><span>{{ t.environmentPath }}</span><code>{{ tool.path || '—' }}</code></div><div class="environment-actions"><n-select v-model:value="environmentSelectedVersions[tool.name]" :options="environmentVersionOptions(tool)" :disabled="tool.installed || environmentChecking || environmentInstalling !== null" size="small" /><n-button type="primary" size="small" :loading="isEnvironmentInstalling(tool)" :disabled="tool.installed || environmentChecking || environmentInstalling !== null" @click="installEnvironmentTool(tool)">{{ tool.installed ? t.installed : environmentActionsText.install }}</n-button></div></n-space></n-card></n-grid-item></n-grid></n-space></template>
+          <template v-else-if="activeView === 'environment'"><n-space vertical :size="24" class="environment-page"><div class="page-heading"><div><h1>{{ t.environment }}</h1><p>{{ t.environmentSub }}</p></div></div><n-text depth="3">{{ t.environmentPreferences.current }}{{ t.environmentPreferences[environmentMode] }}</n-text><n-text v-if="environmentMode === 'system'" depth="3">{{ t.environmentPreferences.globalHint }}</n-text><n-alert v-if="environmentError" type="error" :title="t.operationFailed" closable @close="environmentError = ''">{{ environmentError }}</n-alert><n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen" item-responsive><n-grid-item v-for="tool in environmentTools" :key="tool.name" span="3 m:1"><n-card size="small" class="environment-card"><div class="environment-card-content"><n-space justify="space-between" align="center"><n-space align="center"><img class="environment-tool-icon" :src="environmentIcons[tool.name]" alt="" width="24" height="24" /><strong>{{ tool.name }}</strong></n-space><n-tag :type="tool.installed ? 'success' : 'error'" size="small" :bordered="false">{{ tool.installed ? t.installed : t.notInstalled }}</n-tag></n-space><n-space v-if="tool.installed" align="center" :size="8"><n-text depth="3">{{ tool.version || '—' }}</n-text><n-tag v-if="tool.installed && tool.source" :type="tool.source === 'managed' ? 'info' : 'default'" size="small" :bordered="false">{{ t.environmentSources[tool.source] }}</n-tag></n-space><div v-if="tool.installed" class="environment-path"><span>{{ t.environmentPath }}</span><code>{{ tool.path || '—' }}</code></div><div v-if="!tool.installed" class="environment-actions"><n-select v-model:value="environmentSelectedVersions[tool.name]" :options="environmentVersionOptions(tool)" :disabled="tool.installed || environmentMode === 'system' || environmentModeSaving || environmentChecking || environmentInstalling !== null" size="small" /><n-button type="primary" size="small" :loading="isEnvironmentInstalling(tool)" :disabled="tool.installed || environmentMode === 'system' || environmentModeSaving || environmentChecking || environmentInstalling !== null" @click="installEnvironmentTool(tool)">{{ tool.installed ? t.installed : environmentActionsText.install }}</n-button></div><n-button v-if="tool.managedInstalled" type="error" secondary size="small" :disabled="environmentChecking || environmentModeSaving || environmentInstalling !== null" @click="confirmEnvironmentUninstall(tool)">{{ environmentActionsText.uninstall }}</n-button></div></n-card></n-grid-item></n-grid></n-space></template>
           <template v-else-if="activeView === 'logs'">
             <div class="logs-page">
               <div class="page-heading log-page-heading">
@@ -901,6 +942,7 @@ onBeforeUnmount(() => {
           </template>
           <template v-else-if="activeView === 'settings'"><n-space vertical :size="30" class="settings-page"><div class="page-heading"><div><h1>{{ t.settings }}</h1><p>{{ t.settingsSub }}</p></div></div>
             <section><h2 class="settings-section-title">{{ t.appearance }}</h2><n-space vertical :size="14"><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="isDark ? MoonOutline : SunnyOutline" size="22" /><div><h3>{{ t.theme }}</h3><p>{{ t.themeSub }}</p></div></div><n-select v-model:value="themeMode" :options="themeOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><span class="palette-dot" :style="{ backgroundColor: activePalette.primary }"></span><div><h3>{{ t.themeColor }}</h3><p>{{ t.themeColorSub }}</p></div></div><n-select v-model:value="themeColor" :options="colorOptions" style="width: 190px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="LanguageOutline" size="22" /><div><h3>{{ t.language }}</h3><p>{{ t.languageSub }}</p></div></div><n-select v-model:value="language" :options="languageOptions" style="width: 190px" /></div></n-card></n-space></section>
+            <section><h2 class="settings-section-title">{{ t.environmentPreferences.title }}</h2><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><n-icon :component="HardwareChipOutline" size="22" /><div><h3>{{ t.environmentPreferences.mode }}</h3><p>{{ t.environmentPreferences.hint }}</p></div></div><n-select :value="environmentMode" :options="environmentModeOptions" :loading="environmentModeSaving" :disabled="!settingsReady || environmentModeSaving || environmentInstalling !== null" :aria-label="t.environmentPreferences.mode" style="width: 210px; flex-shrink: 0" @update:value="saveEnvironmentMode" /></div></n-card></section>
             <section><h2 class="settings-section-title">{{ t.behavior }}</h2><n-space vertical :size="14">
               <n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.persistInstanceState }}</h3><p>{{ t.persistInstanceStateSub }}</p></div></div><n-switch :value="persistInstanceState" :disabled="!settingsReady || startupSaving" :loading="startupSaving" :aria-label="t.persistInstanceState" @update:value="saveBehaviorSettings({ persistInstanceState: $event })" /></div></n-card>
               <n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.launchAtLogin }}</h3><p>{{ t.launchAtLoginSub }}</p></div></div><n-switch :value="launchAtLogin" :disabled="!settingsReady || !startupSupported || startupSaving" :loading="startupSaving" :aria-label="t.launchAtLogin" @update:value="saveBehaviorSettings({ launchAtLogin: $event })" /></div></n-card>
