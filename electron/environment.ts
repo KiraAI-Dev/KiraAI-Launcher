@@ -137,7 +137,8 @@ async function detectManagedTool(definition: EnvironmentToolDefinition): Promise
 
 async function selectTools(): Promise<EnvironmentTool[]> {
   return Promise.all(environmentToolDefinitions().map(async definition => {
-    const managedInstalled = await fs.lstat(managedToolRoot(definition.name)).then(() => true, () => false)
+    const managedInstalled = await fs.readdir(managedToolRoot(definition.name))
+      .then(entries => entries.some(entry => !entry.startsWith('.')), () => false)
     const managed = environmentMode !== 'system' ? await detectManagedTool(definition) : undefined
     const selected = managed ?? (environmentMode !== 'managed' ? await detectGlobalTool(definition) : undefined)
     return { ...(selected ?? { ...definitionFields(definition), installed: false }), managedInstalled }

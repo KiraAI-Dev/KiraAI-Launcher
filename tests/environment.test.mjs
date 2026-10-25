@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { readFileSync, promises as fs } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -438,4 +439,123 @@ test('venv creation and dependency installation use the selected executable path
     }
     assert.ok(commands.every(command => command.env === env))
   }
+})
+
+for (const [name, version, directory] of [['Python', '3.11', 'python'], ['Node.js', 'LTS', 'node']]) {
+  for (const failure of ['corrupt', 'extractFailed', 'verifyFailed']) {
+    test(`${name} ${failure} does not expose uninstall for the empty parent left after installation fails`, async t => {
+      const f = await fixture(t)
+      f.state[failure] = true
+      await assert.rejects(f.environment.installEnvironmentTool({ name, version }))
+      assert.deepEqual(await fs.readdir(path.join(f.root, 'environments', directory)), [])
+      const tool = (await f.environment.checkEnvironment()).find(item => item.name === name)
+      assert.equal(tool.installed, false)
+      assert.equal(tool.managedInstalled, false)
+    })
+  }
+}
+
+test('empty and staging-only roots are not managed installations, while broken installed content can still be removed', async t => {
+  const f = await fixture(t)
+  const root = path.join(f.root, 'environments', 'python')
+  await fs.mkdir(root, { recursive: true })
+  assert.equal((await f.environment.checkEnvironment())[0].managedInstalled, false)
+  await fs.mkdir(path.join(root, '.install-incomplete'))
+  assert.equal((await f.environment.checkEnvironment())[0].managedInstalled, false)
+  await fs.mkdir(path.join(root, '3.11'))
+  await fs.writeFile(path.join(root, '3.11', 'damaged-runtime.txt'), 'broken installation')
+  const python = (await f.environment.checkEnvironment())[0]
+  assert.equal(python.installed, false)
+  assert.equal(python.managedInstalled, true)
+  assert.equal((await f.environment.uninstallEnvironmentTool({ name: 'Python' }))[0].managedInstalled, false)
+})
+
+async function stoppingProjectFixture() {
+  const child = Object.assign(new EventEmitter(), { pid: 123, exitCode: null, signalCode: null })
+  const running = new Map(), timers = new Map()
+  const state = { graceful: true, forceFails: false, forceStops: 0, uninstalls: 0 }
+  const api = load('electron/main.ts', {}, {
+    environmentUninstalling: false, stoppingLocalProjects: false, launchedProjects: running, startingProjects: new Map(), pendingProjectRestores: new Set(),
+    path: path.posix, process: { platform: 'win32', cwd: () => '/launcher' },
+    loadProjects: async () => [{ id: 'project', name: 'Project', type: 'local', projectPath: '/project' }],
+    getLocalProject: async () => ({ port: 5267 }), getLocalWebuiUrl: () => 'http://localhost:5267',
+    writeLauncherLog: () => {}, publishProjectChange: () => {}, ensureLocalPortAvailable: async () => {},
+    selectFastestPackageIndex: async () => 'https://pypi.org/simple/',
+    resolveProjectEnvironment: async () => ({ python: '/managed/python', env: {} }), projectVenvMatchesPython: async () => true,
+    spawn: () => child, waitForSpawn: async () => {}, waitForLocalWebui: async () => {},
+    requestGracefulLocalShutdown: async () => state.graceful,
+    LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS: 100, LOCAL_FORCE_STOP_TIMEOUT_MS: 50,
+    setTimeout: callback => { const token = {}; timers.set(token, callback); return token }, clearTimeout: token => timers.delete(token),
+    runProjectCommand: async command => {
+      if (command !== 'taskkill') return
+      state.forceStops++
+      if (state.forceFails) {
+        child.emit('error', new Error('termination failed'))
+        throw new Error('LOCAL_STOP_FAILED')
+      }
+    },
+    uninstallEnvironmentTool: async () => { state.uninstalls++; return [] },
+  }, ['launchLocalProject', 'stopLocalProject', 'waitForProcessExit', 'uninstallLauncherEnvironment'])
+  await api.launchLocalProject('project', () => {})
+  return { api, child, running, timers, state, exit() { child.exitCode = 0; child.emit('exit', 0, null) } }
+}
+
+test('runtime uninstall stays blocked from the first stop await through actual graceful process exit', async () => {
+  const f = await stoppingProjectFixture()
+  const stop = f.api.stopLocalProject('project')
+  await assert.rejects(f.api.uninstallLauncherEnvironment({ name: 'Python' }), /ENVIRONMENT_IN_USE/)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(f.timers.size, 1)
+  assert.equal(f.running.has('project'), true)
+  await assert.rejects(f.api.uninstallLauncherEnvironment({ name: 'Python' }), /ENVIRONMENT_IN_USE/)
+  assert.equal(f.state.uninstalls, 0)
+  f.exit()
+  await stop
+  await f.api.uninstallLauncherEnvironment({ name: 'Python' })
+  assert.equal(f.state.uninstalls, 1)
+  assert.equal(f.running.size, 0)
+  assert.equal(f.timers.size, 0)
+})
+
+test('a failed termination keeps the live process in use until a later exit', async () => {
+  const f = await stoppingProjectFixture()
+  f.state.graceful = false
+  f.state.forceFails = true
+  await assert.rejects(f.api.stopLocalProject('project'), /LOCAL_STOP_FAILED/)
+  assert.equal(f.running.has('project'), true)
+  await assert.rejects(f.api.uninstallLauncherEnvironment({ name: 'Python' }), /ENVIRONMENT_IN_USE/)
+  await assert.rejects(f.api.stopLocalProject('project'), /LOCAL_STOP_FAILED/)
+  await assert.rejects(f.api.uninstallLauncherEnvironment({ name: 'Python' }), /ENVIRONMENT_IN_USE/)
+  f.exit()
+  await f.api.uninstallLauncherEnvironment({ name: 'Python' })
+  assert.equal(f.state.uninstalls, 1)
+})
+
+test('graceful and forced stop timeouts keep runtime removal blocked until the process exits', async () => {
+  const f = await stoppingProjectFixture()
+  const stop = f.api.stopLocalProject('project')
+  const failed = assert.rejects(stop, /LOCAL_STOP_TIMEOUT/)
+  await new Promise(resolve => setImmediate(resolve))
+  f.timers.values().next().value()
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(f.state.forceStops, 1)
+  f.timers.values().next().value()
+  await failed
+  assert.equal(f.running.has('project'), true)
+  await assert.rejects(f.api.uninstallLauncherEnvironment({ name: 'Python' }), /ENVIRONMENT_IN_USE/)
+  f.exit()
+  await f.api.uninstallLauncherEnvironment({ name: 'Python' })
+  assert.equal(f.state.uninstalls, 1)
+})
+
+test('a signal exit before shutdown reaches its wait does not leave the stop pending', async () => {
+  const f = await stoppingProjectFixture()
+  const stop = f.api.stopLocalProject('project')
+  f.child.signalCode = 'SIGTERM'
+  f.child.emit('exit', null, 'SIGTERM')
+  await stop
+  assert.equal(f.timers.size, 0)
+  assert.equal(f.state.forceStops, 0)
+  await f.api.uninstallLauncherEnvironment({ name: 'Python' })
+  assert.equal(f.state.uninstalls, 1)
 })

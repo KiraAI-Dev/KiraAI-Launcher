@@ -583,8 +583,9 @@ async function launchLocalProject(id: string, report: ProjectProgressReporter): 
     publishProjectChange()
     void writeLauncherLog(code === 0 ? 'INFO' : 'WARN', 'Local project process exited', { project: project.name, code, signal })
   })
-  child.once('error', () => {
-    launchedProjects.delete(id)
+  child.on('error', () => {
+    // A failed termination can emit an error while the process is still alive.
+    if (typeof child.pid !== 'number') launchedProjects.delete(id)
     publishProjectChange()
     void writeLauncherLog('ERROR', 'Local project process failed', { project: project.name })
   })
@@ -612,7 +613,7 @@ async function stopLocalProject(id: string): Promise<void> {
   pendingProjectRestores.delete(id)
   const child = launchedProjects.get(id)
   if (!child) return
-  launchedProjects.delete(id)
+  // Keep the runtime in use until the process exits, including failed or timed-out stops.
   if (typeof child.pid !== 'number') throw new Error('LOCAL_STOP_FAILED')
 
   const project = (await loadProjects()).find((item) => item.id === id)
@@ -632,7 +633,7 @@ async function stopLocalProject(id: string): Promise<void> {
     }
   }
 
-  if (child.exitCode !== null) return
+  if (child.exitCode !== null || child.signalCode !== null) return
   if (process.platform === 'win32') {
     await runProjectCommand('taskkill', ['/pid', String(child.pid), '/t', '/f'], process.cwd(), 'LOCAL_STOP_FAILED')
   } else if (!child.kill('SIGTERM')) {
@@ -662,7 +663,7 @@ async function requestGracefulLocalShutdown(
 
 function waitForProcessExit(child: ReturnType<typeof spawn>, timeoutMs: number): Promise<void> {
   return new Promise((resolve, reject) => {
-    if (child.exitCode !== null) {
+    if (child.exitCode !== null || child.signalCode !== null) {
       resolve()
       return
     }
