@@ -26,7 +26,7 @@ function settingsPath() {
 
 export function sanitizeSettings(value: unknown): LauncherSettings {
   const candidate = typeof value === 'object' && value !== null ? value as Partial<LauncherSettings> : {}
-  const environmentVariables = sanitizeEnvironmentVariables(candidate.environmentVariables)
+  const environmentVariables = sanitizeEnvironmentVariables(candidate.environmentVariables, process.platform === 'win32')
   if (!environmentVariables) throw new Error('ENVIRONMENT_VARIABLES_INVALID')
   return {
     environmentVariables,
@@ -47,7 +47,10 @@ export function sanitizeSettings(value: unknown): LauncherSettings {
 
 export async function loadSettings(): Promise<LauncherSettings> {
   try {
-    return sanitizeSettings(JSON.parse(await fs.readFile(settingsPath(), 'utf8')))
+    const value: unknown = JSON.parse(await fs.readFile(settingsPath(), 'utf8'))
+    const candidate = typeof value === 'object' && value !== null ? value as Partial<LauncherSettings> : {}
+    // A malformed environment map must not discard unrelated preferences or rewrite the file.
+    return sanitizeSettings({ ...candidate, environmentVariables: sanitizeEnvironmentVariables(candidate.environmentVariables, process.platform === 'win32') ?? {} })
   } catch {
     return saveSettings(defaultSettings)
   }

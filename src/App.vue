@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { parseEnvironmentVariables } from '../electron/environment-variables'
+import { formatEnvironmentVariables, parseEnvironmentVariables } from '../electron/environment-variables'
 import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { darkTheme, enUS, NButton, NDialogProvider, NIcon, NMessageProvider, NTag, useDialog, useMessage, zhCN } from 'naive-ui'
 import type { DataTableColumns, MenuOption } from 'naive-ui'
@@ -661,7 +661,7 @@ function openProjectSettings(project: ManagedProject) {
   projectSettingsAccessToken.value = ''
   projectSettingsLoadedAccessToken.value = null
   projectSettingsLaunchArgs.value = (project.launchArgs ?? []).map(formatLaunchArgument).join(' ')
-  projectSettingsEnvironmentVariables.value = Object.entries(project.environmentVariables ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
+  projectSettingsEnvironmentVariables.value = formatEnvironmentVariables(project.environmentVariables ?? {})
   showProjectSettingsModal.value = true
   if (project.type === 'cloud' && project.hasSavedAccessToken) void loadProjectSettingsAccessToken(project)
 }
@@ -728,11 +728,12 @@ function parseProjectSettingsLaunchArgs() {
 
 function parseProjectSettingsEnvironmentVariables() {
   try {
-    return parseEnvironmentVariables(projectSettingsEnvironmentVariables.value)
+    return parseEnvironmentVariables(projectSettingsEnvironmentVariables.value, window.kiraLauncher?.platform === 'win32')
   } catch {
     throw new Error('PROJECT_ENVIRONMENT_VARIABLES_INVALID')
   }
 }
+
 async function saveProjectSettings() {
   const project = editingProject.value
   if (!project) return
@@ -785,7 +786,7 @@ async function restoreSettings() {
     language.value = savedSettings.language
     webuiOpenMode.value = savedSettings.webuiOpenMode
     globalEnvironmentVariables.value = savedSettings.environmentVariables
-    globalEnvironmentDraft.value = Object.entries(savedSettings.environmentVariables).map(([key, value]) => key + '=' + value).join('\n')
+    globalEnvironmentDraft.value = formatEnvironmentVariables(savedSettings.environmentVariables)
     environmentMode.value = savedSettings.environmentMode
     closeAction.value = savedSettings.closeAction
     closeReminder.value = savedSettings.closeReminder
@@ -801,7 +802,7 @@ async function restoreSettings() {
 function queueSettingsSave(overrides: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized' | 'persistInstanceState' | 'environmentMode' | 'environmentVariables'>> = {}) {
   const save = settingsSaveQueue.then(async () => {
     const saved = await requireLauncherBridge().settings.save({
-      environmentVariables: globalEnvironmentVariables.value,
+      environmentVariables: { ...globalEnvironmentVariables.value },
       environmentMode: environmentMode.value,
       themeMode: themeMode.value,
       themeColor: themeColor.value,
@@ -830,7 +831,7 @@ async function saveGlobalEnvironmentVariables() {
   if (globalEnvironmentSaving.value) return
   let variables: Record<string, string>
   try {
-    variables = parseEnvironmentVariables(globalEnvironmentDraft.value)
+    variables = parseEnvironmentVariables(globalEnvironmentDraft.value, window.kiraLauncher?.platform === 'win32')
   } catch {
     messageHost.value?.error(globalEnvironmentText.value.invalid)
     return
@@ -845,6 +846,7 @@ async function saveGlobalEnvironmentVariables() {
     globalEnvironmentSaving.value = false
   }
 }
+
 async function saveBehaviorSettings(startup: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized' | 'persistInstanceState'>>) {
   startupSaving.value = true
   try {

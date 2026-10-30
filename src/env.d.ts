@@ -72,6 +72,7 @@ type LauncherLog = import('../electron/types').LauncherLog
 
 interface Window {
   kiraLauncher?: {
+    platform: string
     window: {
       minimize: () => void
       toggleMaximize: () => void

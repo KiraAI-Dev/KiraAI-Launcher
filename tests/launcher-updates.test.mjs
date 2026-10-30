@@ -18,7 +18,7 @@ function loadSource(file, dependencies = {}, globals = {}, names) {
     if (id === './environment-variables.js') return loadSource('electron/environment-variables.ts')
     assert.ok(id in dependencies, 'Unexpected dependency: ' + id)
     return dependencies[id]
-  }, Error, ...globals })
+  }, Error, process, ...globals })
   vm.runInContext(outputText, state)
   return { ...state.exports, state }
 }

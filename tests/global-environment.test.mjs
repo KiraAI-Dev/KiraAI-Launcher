@@ -69,3 +69,49 @@ test('global environment translations have identical keys and interpolation vari
   const shape = locale => Object.entries(locale).map(([key, value]) => [key, [...value.matchAll(/\{([^}]+)\}/g)].map(match => match[1]).sort()])
   assert.deepEqual(shape(globalEnvironmentMessages['zh-CN']), shape(globalEnvironmentMessages['en-US']))
 })
+
+test('Windows rejects case-only duplicates while POSIX names remain distinct', () => {
+  for (const text of ['PATH=first\nPath=second', 'PATH=first\nPath:="second"']) {
+    assert.throws(() => variables.parseEnvironmentVariables(text, true), /ENVIRONMENT_VARIABLES_INVALID/)
+    const posix = variables.parseEnvironmentVariables(text, false)
+    assert.equal(posix.PATH, 'first')
+    assert.equal(posix.Path, 'second')
+  }
+  assert.equal(variables.sanitizeEnvironmentVariables({ PATH: 'a', Path: 'b' }, true), null)
+  assert.ok(variables.sanitizeEnvironmentVariables({ PATH: 'a', Path: 'b' }, false))
+})
+
+test('global and project editors round-trip multiline values without changing literal strings', () => {
+  const original = { CERT: 'first\nNEXT=value', CRLF: 'first\r\nsecond\r', QUOTED: '"literal\\n"', PATH_VALUE: 'C:\\new\\test', EMPTY: '', SPACE: ' a=b ', ENCODED_LOOKING: ':="quoted"' }
+  const formatted = variables.formatEnvironmentVariables(original)
+  assert.equal(formatted.split('\n').length, Object.keys(original).length)
+  assert.equal(formatted.includes('CERT:='), true)
+  assert.deepEqual({ ...variables.parseEnvironmentVariables(formatted) }, original)
+  assert.deepEqual({ ...variables.parseEnvironmentVariables(formatted.replaceAll('\n', '\r\n')) }, original)
+  for (const text of ['A:=null', 'A:=1', 'A:=[]', 'A:={}', 'A:="unterminated', 'A:="\\u0000"', 'A:=true']) {
+    assert.throws(() => variables.parseEnvironmentVariables(text), /ENVIRONMENT_VARIABLES_INVALID/)
+  }
+  for (const rawValue of ['"quoted"', '\\n', ':="quoted"']) {
+    assert.equal(variables.parseEnvironmentVariables('A=' + rawValue).A, rawValue)
+  }
+})
+
+test('invalid stored environment maps preserve other settings without overwriting the file', async () => {
+  for (const bad of [null, [], { 'BAD-KEY': 'x' }, { A: 1 }, { A: 'bad\0value' }, { A: 'x'.repeat(16385) }]) {
+    const original = JSON.stringify({ themeColor: 'purple', language: 'en-US', launchAtLogin: true, environmentVariables: bad })
+    let writes = 0
+    const settings = load('electron/settings.ts', {
+      './environment-variables.js': variables,
+      electron: { app: { getPath: () => '/settings' } }, 'node:path': path.posix,
+      'node:fs': { promises: { readFile: async () => original, mkdir: async () => {}, writeFile: async () => { writes++ }, rename: async () => {} } },
+    })
+    const restored = await settings.loadSettings()
+    assert.equal(restored.themeColor, 'purple')
+    assert.equal(restored.language, 'en-US')
+    assert.equal(restored.launchAtLogin, true)
+    assert.equal(Object.keys(restored.environmentVariables).length, 0)
+    assert.equal(writes, 0)
+    await assert.rejects(settings.saveSettings({ themeColor: 'green', environmentVariables: bad }), /ENVIRONMENT_VARIABLES_INVALID/)
+    assert.equal(writes, 0)
+  }
+})

@@ -21,7 +21,7 @@ function load(file, dependencies, globals, names) {
     if (id === './environment-variables.js') return load('electron/environment-variables.ts', {}, {})
     assert.ok(id in dependencies, 'Unexpected dependency: ' + id)
     return dependencies[id]
-  }, Error, ...globals })
+  }, Error, process, ...globals })
   return exports
 }
 
