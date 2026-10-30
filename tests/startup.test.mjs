@@ -5,6 +5,7 @@ import path from 'node:path'
 import vm from 'node:vm'
 import test from 'node:test'
 import ts from 'typescript'
+import { ref } from 'vue'
 
 function loadSource(file, dependencies = {}, globals = {}, names) {
   let source = readFileSync(new URL('../' + file, import.meta.url), 'utf8')
@@ -16,9 +17,10 @@ function loadSource(file, dependencies = {}, globals = {}, names) {
   }
   const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } })
   const state = vm.createContext({ exports: {}, require: id => {
+    if (id === './environment-variables.js') return loadSource('electron/environment-variables.ts')
     assert.ok(id in dependencies, 'Unexpected dependency: ' + id)
     return dependencies[id]
-  }, Error, ...globals })
+  }, Error, process, ...globals })
   vm.runInContext(outputText, state)
   return { ...state.exports, state }
 }
@@ -243,29 +245,31 @@ test('hidden startup never shows the BrowserWindow until explicitly restored', (
 })
 
 test('queued UI saves preserve startup preferences when appearance changes concurrently', async () => {
-  const ref = value => ({ value })
+
   const writes = []
   let finishFirst
   const f = loadSource('src/App.vue', {}, {
     settingsSaveQueue: Promise.resolve(),
-    environmentMode: ref('auto'), themeMode: ref('system'), themeColor: ref('blue'), language: ref('zh-CN'), webuiOpenMode: ref('launcher'),
+    globalEnvironmentVariables: ref({}), environmentMode: ref('auto'), themeMode: ref('system'), themeColor: ref('blue'), language: ref('zh-CN'), webuiOpenMode: ref('launcher'),
     closeAction: ref('minimize'), closeReminder: ref(true), autoUpdate: ref(true), autoDownloadUpdate: ref(true),
     launchAtLogin: ref(false), startMinimized: ref(false), persistInstanceState: ref(false),
     requireLauncherBridge: () => ({ settings: { save: async settings => {
-      writes.push(settings)
+      writes.push(structuredClone(settings))
       if (writes.length === 1) await new Promise(resolve => { finishFirst = resolve })
-      return settings
+      return structuredClone(settings)
     } } }),
   }, ['queueSettingsSave'])
   const startup = f.queueSettingsSave({ launchAtLogin: true, persistInstanceState: true })
   await new Promise(resolve => setImmediate(resolve))
   f.state.themeMode.value = 'dark'
+  const globalVariables = f.queueSettingsSave({ environmentVariables: { TEST_GLOBAL: 'saved' } })
   const appearance = f.queueSettingsSave()
   finishFirst()
-  await Promise.all([startup, appearance])
+  await Promise.all([startup, globalVariables, appearance])
   assert.equal(writes[1].launchAtLogin, true)
   assert.equal(writes[1].persistInstanceState, true)
   assert.equal(writes[1].themeMode, 'dark')
+  assert.equal(writes[2].environmentVariables.TEST_GLOBAL, 'saved')
 })
 
 test('all locale keys and interpolation variables match', () => {

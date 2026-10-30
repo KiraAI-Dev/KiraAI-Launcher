@@ -1,9 +1,11 @@
+import { sanitizeEnvironmentVariables } from './environment-variables.js'
 import { app } from 'electron'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import type { EnvironmentMode, CloseAction, Language, LauncherSettings, ThemeColor, ThemeMode, WebuiOpenMode } from './types.js'
 
 export const defaultSettings: LauncherSettings = {
+  environmentVariables: {},
   environmentMode: 'auto',
   themeMode: 'system',
   themeColor: 'blue',
@@ -24,7 +26,10 @@ function settingsPath() {
 
 export function sanitizeSettings(value: unknown): LauncherSettings {
   const candidate = typeof value === 'object' && value !== null ? value as Partial<LauncherSettings> : {}
+  const environmentVariables = sanitizeEnvironmentVariables(candidate.environmentVariables, process.platform === 'win32')
+  if (!environmentVariables) throw new Error('ENVIRONMENT_VARIABLES_INVALID')
   return {
+    environmentVariables,
     environmentMode: ['auto', 'system', 'managed'].includes(candidate.environmentMode ?? '') ? candidate.environmentMode as EnvironmentMode : defaultSettings.environmentMode,
     themeMode: ['system', 'light', 'dark'].includes(candidate.themeMode ?? '') ? candidate.themeMode as ThemeMode : defaultSettings.themeMode,
     themeColor: ['blue', 'purple', 'green', 'orange'].includes(candidate.themeColor ?? '') ? candidate.themeColor as ThemeColor : defaultSettings.themeColor,
@@ -42,7 +47,10 @@ export function sanitizeSettings(value: unknown): LauncherSettings {
 
 export async function loadSettings(): Promise<LauncherSettings> {
   try {
-    return sanitizeSettings(JSON.parse(await fs.readFile(settingsPath(), 'utf8')))
+    const value: unknown = JSON.parse(await fs.readFile(settingsPath(), 'utf8'))
+    const candidate = typeof value === 'object' && value !== null ? value as Partial<LauncherSettings> : {}
+    // A malformed environment map must not discard unrelated preferences or rewrite the file.
+    return sanitizeSettings({ ...candidate, environmentVariables: sanitizeEnvironmentVariables(candidate.environmentVariables, process.platform === 'win32') ?? {} })
   } catch {
     return saveSettings(defaultSettings)
   }

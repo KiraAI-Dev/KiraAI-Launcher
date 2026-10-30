@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { formatEnvironmentVariables, parseEnvironmentVariables } from '../electron/environment-variables'
 import { computed, defineComponent, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { darkTheme, enUS, NButton, NDialogProvider, NIcon, NMessageProvider, NTag, useDialog, useMessage, zhCN } from 'naive-ui'
 import type { DataTableColumns, MenuOption } from 'naive-ui'
@@ -8,7 +9,7 @@ import { getLogEntries } from './components/log-format'
 import LauncherReleaseNotes from './components/LauncherReleaseNotes.vue'
 import ProjectOperationProgress from './components/ProjectOperationProgress.vue'
 import { projectOperationSteps, type ProjectOperation, type ProjectRelease } from '../electron/types'
-import { messages, projectAdvancedSettingsMessages, projectProgressMessages, type Language } from './i18n/messages'
+import { messages, globalEnvironmentMessages, projectAdvancedSettingsMessages, projectProgressMessages, type Language } from './i18n/messages'
 import { AddOutline, CloudOutline, CloudUploadOutline, CodeSlashOutline, CubeOutline, DocumentTextOutline, DownloadOutline, FolderOpenOutline, HardwareChipOutline, HomeOutline, InformationCircleOutline, LanguageOutline, LayersOutline, MoonOutline, OpenOutline, PlayOutline, RefreshOutline, RocketOutline, SettingsOutline, StopOutline, SunnyOutline, TrashOutline } from '@vicons/ionicons5'
 
 type ViewKey = 'overview' | 'projects' | 'deployments' | 'environment' | 'logs' | 'settings' | 'about'
@@ -110,6 +111,10 @@ const environmentSelectedVersions = ref<Partial<Record<EnvironmentTool['name'], 
 const environmentError = ref('')
 const environmentMode = ref<LauncherSettings['environmentMode']>('auto')
 const environmentModeSaving = ref(false)
+const globalEnvironmentVariables = ref<Record<string, string>>({})
+const globalEnvironmentDraft = ref('')
+const globalEnvironmentSaving = ref(false)
+const globalEnvironmentText = computed(() => globalEnvironmentMessages[language.value])
 const projectError = ref('')
 const closeReminder = ref(true)
 const persistInstanceState = ref(false)
@@ -656,7 +661,7 @@ function openProjectSettings(project: ManagedProject) {
   projectSettingsAccessToken.value = ''
   projectSettingsLoadedAccessToken.value = null
   projectSettingsLaunchArgs.value = (project.launchArgs ?? []).map(formatLaunchArgument).join(' ')
-  projectSettingsEnvironmentVariables.value = Object.entries(project.environmentVariables ?? {}).map(([key, value]) => `${key}=${value}`).join('\n')
+  projectSettingsEnvironmentVariables.value = formatEnvironmentVariables(project.environmentVariables ?? {})
   showProjectSettingsModal.value = true
   if (project.type === 'cloud' && project.hasSavedAccessToken) void loadProjectSettingsAccessToken(project)
 }
@@ -722,17 +727,11 @@ function parseProjectSettingsLaunchArgs() {
 }
 
 function parseProjectSettingsEnvironmentVariables() {
-  const variables: Record<string, string> = {}
-  for (const line of projectSettingsEnvironmentVariables.value.split(/\r?\n/)) {
-    if (!line.trim()) continue
-    const separator = line.indexOf('=')
-    const key = line.slice(0, separator).trim()
-    if (separator <= 0 || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || Object.prototype.hasOwnProperty.call(variables, key)) {
-      throw new Error('PROJECT_ENVIRONMENT_VARIABLES_INVALID')
-    }
-    variables[key] = line.slice(separator + 1)
+  try {
+    return parseEnvironmentVariables(projectSettingsEnvironmentVariables.value, window.kiraLauncher?.platform === 'win32')
+  } catch {
+    throw new Error('PROJECT_ENVIRONMENT_VARIABLES_INVALID')
   }
-  return variables
 }
 
 async function saveProjectSettings() {
@@ -786,6 +785,8 @@ async function restoreSettings() {
     themeColor.value = savedSettings.themeColor
     language.value = savedSettings.language
     webuiOpenMode.value = savedSettings.webuiOpenMode
+    globalEnvironmentVariables.value = savedSettings.environmentVariables
+    globalEnvironmentDraft.value = formatEnvironmentVariables(savedSettings.environmentVariables)
     environmentMode.value = savedSettings.environmentMode
     closeAction.value = savedSettings.closeAction
     closeReminder.value = savedSettings.closeReminder
@@ -798,9 +799,10 @@ async function restoreSettings() {
   settingsReady.value = true
 }
 
-function queueSettingsSave(overrides: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized' | 'persistInstanceState' | 'environmentMode'>> = {}) {
+function queueSettingsSave(overrides: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized' | 'persistInstanceState' | 'environmentMode' | 'environmentVariables'>> = {}) {
   const save = settingsSaveQueue.then(async () => {
     const saved = await requireLauncherBridge().settings.save({
+      environmentVariables: { ...globalEnvironmentVariables.value },
       environmentMode: environmentMode.value,
       themeMode: themeMode.value,
       themeColor: themeColor.value,
@@ -815,6 +817,7 @@ function queueSettingsSave(overrides: Partial<Pick<LauncherSettings, 'launchAtLo
       startMinimized: startMinimized.value,
       ...overrides,
     })
+    globalEnvironmentVariables.value = saved.environmentVariables
     environmentMode.value = saved.environmentMode
     launchAtLogin.value = saved.launchAtLogin
     startMinimized.value = saved.startMinimized
@@ -822,6 +825,26 @@ function queueSettingsSave(overrides: Partial<Pick<LauncherSettings, 'launchAtLo
   })
   settingsSaveQueue = save.catch(() => undefined)
   return save
+}
+
+async function saveGlobalEnvironmentVariables() {
+  if (globalEnvironmentSaving.value) return
+  let variables: Record<string, string>
+  try {
+    variables = parseEnvironmentVariables(globalEnvironmentDraft.value, window.kiraLauncher?.platform === 'win32')
+  } catch {
+    messageHost.value?.error(globalEnvironmentText.value.invalid)
+    return
+  }
+  globalEnvironmentSaving.value = true
+  try {
+    await queueSettingsSave({ environmentVariables: variables })
+    messageHost.value?.success(globalEnvironmentText.value.saved)
+  } catch {
+    messageHost.value?.error(t.value.settingsSaveFailed)
+  } finally {
+    globalEnvironmentSaving.value = false
+  }
 }
 
 async function saveBehaviorSettings(startup: Partial<Pick<LauncherSettings, 'launchAtLogin' | 'startMinimized' | 'persistInstanceState'>>) {
@@ -947,6 +970,13 @@ onBeforeUnmount(() => {
               <n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.persistInstanceState }}</h3><p>{{ t.persistInstanceStateSub }}</p></div></div><n-switch :value="persistInstanceState" :disabled="!settingsReady || startupSaving" :loading="startupSaving" :aria-label="t.persistInstanceState" @update:value="saveBehaviorSettings({ persistInstanceState: $event })" /></div></n-card>
               <n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.launchAtLogin }}</h3><p>{{ t.launchAtLoginSub }}</p></div></div><n-switch :value="launchAtLogin" :disabled="!settingsReady || !startupSupported || startupSaving" :loading="startupSaving" :aria-label="t.launchAtLogin" @update:value="saveBehaviorSettings({ launchAtLogin: $event })" /></div></n-card>
               <n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.startMinimized }}</h3><p>{{ t.startMinimizedSub }}</p></div></div><n-switch :value="startMinimized" :disabled="!settingsReady || !startupSupported || !launchAtLogin || startupSaving" :aria-label="t.startMinimized" @update:value="saveBehaviorSettings({ startMinimized: $event })" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.webuiOpenMode }}</h3><p>{{ t.webuiOpenModeSub }}</p></div></div><n-select v-model:value="webuiOpenMode" :options="webuiOpenModeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeWhen }}</h3><p>{{ t.closeWhenSub }}</p></div></div><n-select v-model:value="closeAction" :options="closeOptions" style="width: 210px" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.closeReminder }}</h3><p>{{ t.closeReminderSub }}</p></div></div><n-switch v-model:value="closeReminder" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoUpdate }}</h3><p>{{ t.autoUpdateSub }}</p></div></div><n-switch v-model:value="autoUpdate" /></div></n-card><n-card size="small" class="setting-card"><div class="setting-row"><div class="setting-copy"><div><h3>{{ t.autoDownloadUpdate }}</h3><p>{{ t.autoDownloadUpdateSub }}</p></div></div><n-switch v-model:value="autoDownloadUpdate" /></div></n-card></n-space></section>
+            <section><h2 class="settings-section-title">{{ globalEnvironmentText.title }}</h2>
+              <n-card size="small" class="setting-card"><n-space vertical :size="14">
+                <n-text depth="3">{{ globalEnvironmentText.hint }}</n-text>
+                <n-input v-model:value="globalEnvironmentDraft" type="textarea" :autosize="{ minRows: 4, maxRows: 12 }" :placeholder="globalEnvironmentText.placeholder" :aria-label="globalEnvironmentText.title" :disabled="!settingsReady || globalEnvironmentSaving" :spellcheck="false" />
+                <n-space justify="end"><n-button type="primary" :loading="globalEnvironmentSaving" :disabled="!settingsReady || globalEnvironmentSaving" @click="saveGlobalEnvironmentVariables">{{ t.save }}</n-button></n-space>
+              </n-space></n-card>
+            </section>
           </n-space></template>
           <template v-else-if="activeView === 'about'">
             <div class="about-page"><n-card class="about-card" :bordered="false"><n-space vertical align="center" :size="18">

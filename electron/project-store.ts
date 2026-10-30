@@ -1,3 +1,5 @@
+import { sanitizeEnvironmentVariables } from './environment-variables.js'
+export { sanitizeEnvironmentVariables } from './environment-variables.js'
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { promises as fs } from 'node:fs'
@@ -27,14 +29,6 @@ export function sanitizeLaunchArgs(value: unknown): string[] | null {
   if (!Array.isArray(value) || value.length > 128) return null
   if (value.some((argument) => typeof argument !== 'string' || argument.length > 4_096 || argument.includes('\0'))) return null
   return [...value]
-}
-
-export function sanitizeEnvironmentVariables(value: unknown): Record<string, string> | null {
-  if (typeof value === 'undefined') return {}
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-  const entries = Object.entries(value)
-  if (entries.length > 128 || entries.some(([key, variableValue]) => !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || typeof variableValue !== 'string' || variableValue.length > 16_384 || variableValue.includes('\0'))) return null
-  return Object.fromEntries(entries)
 }
 
 export function toManagedProject(project: StoredProject): ManagedProject {

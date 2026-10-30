@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer } from 'electron'
 let logSubscriptionId = 0
 
 contextBridge.exposeInMainWorld('kiraLauncher', {
+  platform: process.platform,
   window: {
     minimize: () => ipcRenderer.send('window:minimize'),
     toggleMaximize: () => ipcRenderer.send('window:toggle-maximize'),

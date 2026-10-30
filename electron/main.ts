@@ -1,3 +1,4 @@
+import { mergeEnvironmentVariables } from './environment-variables.js'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, shell, Tray } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
@@ -570,8 +571,7 @@ async function launchLocalProject(id: string, report: ProjectProgressReporter): 
   const child = spawn(venvPythonPath, ['main.py', ...project.launchArgs ?? []], {
     cwd: project.projectPath,
     env: {
-      ...runtime.env,
-      ...project.environmentVariables,
+      ...mergeEnvironmentVariables(runtime.env, currentSettings.environmentVariables, project.environmentVariables),
       KIRA_LAUNCH_SOURCE: 'launcher',
     },
     windowsHide: true,
@@ -916,7 +916,7 @@ async function updateProject(value: unknown): Promise<ManagedProject> {
   if (!projectName) throw new Error('PROJECT_NAME_REQUIRED')
   const safeLaunchArgs = sanitizeLaunchArgs(launchArgs)
   if (safeLaunchArgs === null) throw new Error('PROJECT_LAUNCH_ARGUMENTS_INVALID')
-  const safeEnvironmentVariables = sanitizeEnvironmentVariables(environmentVariables)
+  const safeEnvironmentVariables = sanitizeEnvironmentVariables(environmentVariables, process.platform === 'win32')
   if (safeEnvironmentVariables === null) throw new Error('PROJECT_ENVIRONMENT_VARIABLES_INVALID')
 
   const projects = await loadProjects()
