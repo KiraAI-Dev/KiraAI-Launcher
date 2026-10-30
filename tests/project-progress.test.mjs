@@ -130,19 +130,21 @@ test('existing local project is registered without downloading again', async () 
 })
 
 function deploymentFixture(failDependencies = false) {
-  const events = [], commands = []
+  const events = [], commands = [], spawned = []
   let healthResolve
   const health = new Promise((resolve) => { healthResolve = resolve })
   const { startLocalProject } = loadSource('electron/main.ts', {}, {
-    stoppingLocalProjects: false, environmentUninstalling: false, startingProjects: new Map(), publishProjectChange: () => {}, launchedProjects: new Map(), loadProjects: async () => [{ id: 'local', name: 'Test', type: 'local', projectPath: '/project' }],
+    stoppingLocalProjects: false, environmentUninstalling: false, startingProjects: new Map(), publishProjectChange: () => {}, launchedProjects: new Map(), loadProjects: async () => [{ id: 'local', name: 'Test', type: 'local', projectPath: '/project', environmentVariables: { SHARED: 'project', KIRA_LAUNCH_SOURCE: 'custom' } }],
     writeLauncherLog: () => {}, getLocalProject: async () => ({ port: 5267 }),
     getLocalWebuiUrl: () => 'http://localhost:5267', ensureLocalPortAvailable: async () => {},
     path: path.posix, process: { platform: 'linux', env: {} }, fs: { access: async () => {} },
-    selectFastestPackageIndex: async () => 'https://pypi.org/simple/', projectVenvMatchesPython: async () => true, resolveProjectEnvironment: async () => ({ python: '/selected/python', uv: '/selected/uv', env: {} }),
+    selectFastestPackageIndex: async () => 'https://pypi.org/simple/', projectVenvMatchesPython: async () => true, resolveProjectEnvironment: async () => ({ python: '/selected/python', uv: '/selected/uv', env: { SYSTEM_ONLY: 'system', SHARED: 'system' } }),
     runProjectCommand: async (_command, args) => { commands.push(args); if (failDependencies) throw new Error('DEPENDENCY_INSTALL_FAILED') },
-    spawn: () => new EventEmitter(), waitForSpawn: async () => {}, waitForLocalWebui: () => health,
+    currentSettings: { environmentVariables: { SHARED: 'global', GLOBAL_ONLY: 'global', KIRA_LAUNCH_SOURCE: 'global' } },
+    mergeEnvironmentVariables: loadSource('electron/environment-variables.ts', {}, { process }).mergeEnvironmentVariables,
+    spawn: (_command, _args, options) => { spawned.push(options); return new EventEmitter() }, waitForSpawn: async () => {}, waitForLocalWebui: () => health,
   }, ['startLocalProject', 'launchLocalProject'])
-  return { events, commands, healthResolve, run: () => startLocalProject('local', (event) => events.push(event)) }
+  return { events, commands, spawned, healthResolve, run: () => startLocalProject('local', (event) => events.push(event)) }
 }
 
 test('deployment reports setup steps and waits for readiness before resolving', async () => {
@@ -153,6 +155,10 @@ test('deployment reports setup steps and waits for readiness before resolving', 
   assert.deepEqual(fixture.events.map((event) => event.stage), ['validate', 'packageIndex', 'venv', 'dependencies', 'launch', 'health'])
   assert.equal(finished, false)
   assert.equal(fixture.commands.length, 2)
+  assert.equal(fixture.spawned[0].env.SHARED, 'project')
+  assert.equal(fixture.spawned[0].env.GLOBAL_ONLY, 'global')
+  assert.equal(fixture.spawned[0].env.SYSTEM_ONLY, 'system')
+  assert.equal(fixture.spawned[0].env.KIRA_LAUNCH_SOURCE, 'launcher')
   fixture.healthResolve()
   await pending
   assert.equal(finished, true)

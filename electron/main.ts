@@ -1,3 +1,4 @@
+import { mergeEnvironmentVariables } from './environment-variables.js'
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, net, shell, Tray } from 'electron'
 import { execFile, spawn } from 'node:child_process'
 import { promises as fs } from 'node:fs'
@@ -570,8 +571,7 @@ async function launchLocalProject(id: string, report: ProjectProgressReporter): 
   const child = spawn(venvPythonPath, ['main.py', ...project.launchArgs ?? []], {
     cwd: project.projectPath,
     env: {
-      ...runtime.env,
-      ...project.environmentVariables,
+      ...mergeEnvironmentVariables(runtime.env, currentSettings.environmentVariables, project.environmentVariables),
       KIRA_LAUNCH_SOURCE: 'launcher',
     },
     windowsHide: true,

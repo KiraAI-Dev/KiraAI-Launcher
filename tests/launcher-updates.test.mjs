@@ -15,6 +15,7 @@ function loadSource(file, dependencies = {}, globals = {}, names) {
   }
   const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } })
   const state = vm.createContext({ exports: {}, require: (id) => {
+    if (id === './environment-variables.js') return loadSource('electron/environment-variables.ts')
     assert.ok(id in dependencies, 'Unexpected dependency: ' + id)
     return dependencies[id]
   }, Error, ...globals })

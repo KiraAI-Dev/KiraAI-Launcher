@@ -18,6 +18,7 @@ function load(file, dependencies, globals, names) {
   const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } })
   const exports = {}
   vm.runInNewContext(outputText, { exports, require: id => {
+    if (id === './environment-variables.js') return load('electron/environment-variables.ts', {}, {})
     assert.ok(id in dependencies, 'Unexpected dependency: ' + id)
     return dependencies[id]
   }, Error, ...globals })
@@ -482,6 +483,7 @@ async function stoppingProjectFixture() {
     writeLauncherLog: () => {}, publishProjectChange: () => {}, ensureLocalPortAvailable: async () => {},
     selectFastestPackageIndex: async () => 'https://pypi.org/simple/',
     resolveProjectEnvironment: async () => ({ python: '/managed/python', env: {} }), projectVenvMatchesPython: async () => true,
+    currentSettings: { environmentVariables: {} }, mergeEnvironmentVariables: load('electron/environment-variables.ts', {}, { process }).mergeEnvironmentVariables,
     spawn: () => child, waitForSpawn: async () => {}, waitForLocalWebui: async () => {},
     requestGracefulLocalShutdown: async () => state.graceful,
     LOCAL_GRACEFUL_SHUTDOWN_TIMEOUT_MS: 100, LOCAL_FORCE_STOP_TIMEOUT_MS: 50,

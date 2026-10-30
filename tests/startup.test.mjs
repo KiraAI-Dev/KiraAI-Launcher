@@ -16,6 +16,7 @@ function loadSource(file, dependencies = {}, globals = {}, names) {
   }
   const { outputText } = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true } })
   const state = vm.createContext({ exports: {}, require: id => {
+    if (id === './environment-variables.js') return loadSource('electron/environment-variables.ts')
     assert.ok(id in dependencies, 'Unexpected dependency: ' + id)
     return dependencies[id]
   }, Error, ...globals })
@@ -248,7 +249,7 @@ test('queued UI saves preserve startup preferences when appearance changes concu
   let finishFirst
   const f = loadSource('src/App.vue', {}, {
     settingsSaveQueue: Promise.resolve(),
-    environmentMode: ref('auto'), themeMode: ref('system'), themeColor: ref('blue'), language: ref('zh-CN'), webuiOpenMode: ref('launcher'),
+    globalEnvironmentVariables: ref({}), environmentMode: ref('auto'), themeMode: ref('system'), themeColor: ref('blue'), language: ref('zh-CN'), webuiOpenMode: ref('launcher'),
     closeAction: ref('minimize'), closeReminder: ref(true), autoUpdate: ref(true), autoDownloadUpdate: ref(true),
     launchAtLogin: ref(false), startMinimized: ref(false), persistInstanceState: ref(false),
     requireLauncherBridge: () => ({ settings: { save: async settings => {
@@ -260,12 +261,14 @@ test('queued UI saves preserve startup preferences when appearance changes concu
   const startup = f.queueSettingsSave({ launchAtLogin: true, persistInstanceState: true })
   await new Promise(resolve => setImmediate(resolve))
   f.state.themeMode.value = 'dark'
+  const globalVariables = f.queueSettingsSave({ environmentVariables: { TEST_GLOBAL: 'saved' } })
   const appearance = f.queueSettingsSave()
   finishFirst()
-  await Promise.all([startup, appearance])
+  await Promise.all([startup, globalVariables, appearance])
   assert.equal(writes[1].launchAtLogin, true)
   assert.equal(writes[1].persistInstanceState, true)
   assert.equal(writes[1].themeMode, 'dark')
+  assert.equal(writes[2].environmentVariables.TEST_GLOBAL, 'saved')
 })
 
 test('all locale keys and interpolation variables match', () => {

@@ -107,3 +107,20 @@ export const windowControlsMessages = {
   'zh-CN': { minimize: '最小化', maximize: '最大化', restore: '还原', close: '关闭' },
   'en-US': { minimize: 'Minimize', maximize: 'Maximize', restore: 'Restore', close: 'Close' },
 } as const
+
+export const globalEnvironmentMessages = {
+  'zh-CN': {
+    title: '全局环境变量',
+    hint: '应用于所有本地实例，下次启动时生效。全局变量覆盖系统同名变量，实例设置中的同名变量优先；KIRA_LAUNCH_SOURCE 由启动器固定设置。变量仅用于实例运行，不用于依赖安装。配置以明文保存在本机。',
+    placeholder: '每行填写一个 KEY=VALUE，例如 HTTP_PROXY=http://127.0.0.1:7890',
+    invalid: '环境变量无效：请每行填写 KEY=VALUE，名称仅含字母、数字和下划线且不能以数字开头，不得重复；最多 128 项，每个值最多 16384 个字符且不能含空字符。',
+    saved: '全局环境变量已保存，将在下次启动本地实例时生效。',
+  },
+  'en-US': {
+    title: 'Global environment variables',
+    hint: 'Applies to all local instances on their next start. Global values override system values; instance settings take precedence. KIRA_LAUNCH_SOURCE is set by the launcher. Variables apply to instance processes, excluding dependency installation. Settings are stored locally as plain text.',
+    placeholder: 'One KEY=VALUE per line, e.g. HTTP_PROXY=http://127.0.0.1:7890',
+    invalid: 'Invalid environment variables. Enter KEY=VALUE per line. Names may contain letters, digits and underscores, cannot start with a digit, and must be unique. Maximum 128 entries, 16384 characters per value, and no null characters.',
+    saved: 'Global environment variables saved. Changes apply when local instances next start.',
+  },
+} as const

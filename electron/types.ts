@@ -108,6 +108,7 @@ export type LauncherLog = {
 }
 
 export type LauncherSettings = {
+  environmentVariables: Record<string, string>
   environmentMode: EnvironmentMode
   themeMode: ThemeMode
   themeColor: ThemeColor

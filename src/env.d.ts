@@ -1,6 +1,7 @@
 type ProjectProgress = import('../electron/types').ProjectProgress
 
 interface LauncherSettings {
+  environmentVariables: Record<string, string>
   environmentMode: 'auto' | 'system' | 'managed'
   themeMode: 'system' | 'light' | 'dark'
   themeColor: 'blue' | 'purple' | 'green' | 'orange'
