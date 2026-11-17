@@ -27,7 +27,7 @@ function loadSource(file, dependencies = {}, globals = {}, names) {
 
 function startupFixture({ platform = 'win32', packaged = true, env = {}, argv = [], openedAtLogin = false, rejected = false } = {}) {
   const writes = [], reads = [], files = new Map()
-  const login = { openAtLogin: false, executableWillLaunchAtLogin: false, wasOpenedAtLogin: openedAtLogin }
+  const login = { openAtLogin: false, executableWillLaunchAtLogin: false, launchItems: [], wasOpenedAtLogin: openedAtLogin }
   const fs = {
     mkdir: async () => {},
     writeFile: async (file, content) => { files.set(file, content) },
@@ -42,9 +42,14 @@ function startupFixture({ platform = 'win32', packaged = true, env = {}, argv = 
     getLoginItemSettings: options => { reads.push(options); return { ...login } },
     setLoginItemSettings: options => {
       writes.push(options)
-      if (!rejected) {
-        login.openAtLogin = options.openAtLogin
+      if (rejected) return
+      if (platform === 'win32') {
+        login.launchItems = options.openAtLogin ? [{
+          name: options.name, args: [], scope: 'user', enabled: options.enabled,
+        }] : []
         login.executableWillLaunchAtLogin = options.openAtLogin
+      } else {
+        login.openAtLogin = options.openAtLogin
       }
     },
   }
@@ -79,8 +84,10 @@ test('startup settings default off, reject non-booleans and persist both prefere
 test('Windows registers and removes the executable with a dedicated login argument', async () => {
   const f = startupFixture()
   await f.setLaunchAtLogin(true)
+  assert.equal(f.login.openAtLogin, false)
   assert.equal(await f.getLaunchAtLogin(), true)
-  assert.equal(f.writes[0].path, '/installed/KiraAI Launcher')
+  assert.equal(f.writes[0].name, 'KiraAI Launcher')
+  assert.equal(f.writes[0].path, '"/installed/KiraAI Launcher"')
   assert.deepEqual(Array.from(f.writes[0].args), ['--launch-at-login'])
   assert.equal(f.reads[0].path, f.writes[0].path)
   assert.deepEqual(Array.from(f.reads[0].args), Array.from(f.writes[0].args))
@@ -92,12 +99,27 @@ test('Windows registers and removes the executable with a dedicated login argume
 test('Windows portable startup targets the original portable executable', async () => {
   const f = startupFixture({ env: { PORTABLE_EXECUTABLE_FILE: 'D:\\Apps\\Kira Launcher.exe' } })
   await f.setLaunchAtLogin(true)
-  assert.equal(f.writes[0].path, 'D:\\Apps\\Kira Launcher.exe')
+  assert.equal(f.writes[0].path, '"D:\\Apps\\Kira Launcher.exe"')
+  assert.equal(f.reads[0].path, f.writes[0].path)
 })
 
 test('a Windows startup item disabled by the OS is reported as disabled', async () => {
   const f = startupFixture()
-  f.login.openAtLogin = true
+  await f.setLaunchAtLogin(true)
+  f.login.launchItems[0].enabled = false
+  f.login.executableWillLaunchAtLogin = false
+  assert.equal(await f.getLaunchAtLogin(), false)
+})
+
+test('unrelated Windows entries for the same executable do not enable the Launcher setting', async () => {
+  const f = startupFixture()
+  await f.setLaunchAtLogin(true)
+  const [item] = f.login.launchItems
+  f.login.launchItems = [
+    { ...item, enabled: false },
+    { ...item, name: 'Another startup item' },
+    { ...item, scope: 'machine' },
+  ]
   assert.equal(await f.getLaunchAtLogin(), false)
 })
 

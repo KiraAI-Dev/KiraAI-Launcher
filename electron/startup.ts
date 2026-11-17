@@ -16,7 +16,8 @@ function startupExecutable(): string {
 }
 
 function windowsLoginOptions() {
-  return { path: startupExecutable(), args: [LOGIN_START_ARGUMENT] }
+  // Electron parses this path as a command line and writes it to Run as provided.
+  return { path: `"${startupExecutable()}"`, args: [LOGIN_START_ARGUMENT] }
 }
 
 function autostartPath(): string {
@@ -43,8 +44,11 @@ export function shouldStartInTray(settings: LauncherSettings): boolean {
 export async function getLaunchAtLogin(): Promise<boolean> {
   if (!isStartupSupported()) return false
   if (process.platform === 'win32') {
-    const settings = app.getLoginItemSettings(windowsLoginOptions())
-    return settings.openAtLogin && settings.executableWillLaunchAtLogin
+    // Electron filters launchItems by executable and omits switches from their args.
+    const { launchItems } = app.getLoginItemSettings(windowsLoginOptions())
+    return launchItems.some(item => item.scope === 'user'
+      && item.name.toLowerCase() === LOGIN_ITEM_NAME.toLowerCase()
+      && item.enabled)
   }
   if (process.platform === 'darwin') return app.getLoginItemSettings().openAtLogin
   try {
