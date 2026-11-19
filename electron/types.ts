@@ -19,6 +19,18 @@ export type ProjectRelease = {
   prerelease: boolean
 }
 
+export type ProjectUpgradeCheck = {
+  currentVersion: string
+  targetVersion: string
+  updateAvailable: boolean
+  requiresStart?: true
+}
+
+export type ProjectUpgradeProgress = {
+  phase: 'starting' | 'updating' | 'verifying'
+  percentage?: number
+}
+
 export type EnvironmentMode = 'auto' | 'system' | 'managed'
 
 export type ThemeMode = 'system' | 'light' | 'dark'

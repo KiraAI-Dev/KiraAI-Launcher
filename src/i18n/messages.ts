@@ -103,6 +103,57 @@ export const projectProgressMessages = {
   },
 } as const
 
+export const projectBulkUpgradeMessages = {
+  'zh-CN': {
+    title: '批量更新实例', confirmVersion: '确定将以下所选实例更新至 {version} 版本吗？',
+    update: '更新', singleTitle: '更新实例', confirmSingle: '确定将「{name}」更新至 {version} 版本吗？',
+    confirmMultipleVersions: '确定将以下所选实例更新至各自的目标版本吗？',
+    selectAll: '选择所有可更新实例', close: '关闭', checkAgain: '重新检查', apply: '更新所选实例（{count}）',
+    version: '当前版本：{current}', versionChange: '{current} → {target}',
+    states: { checking: '检查中', available: '可更新', current: '无需更新', skipped: '已跳过', running: '更新中', success: '更新成功', failed: '未完成' },
+    phases: { starting: '正在提交更新…', updating: '实例正在安装更新…', verifying: '等待实例重启并校验版本…' },
+    errors: {
+      PROJECT_UPGRADE_LOCAL_NOT_RUNNING: '请先通过启动器启动此本地实例。',
+      PROJECT_UPGRADE_LOCAL_VERSION_UNKNOWN: '无法识别本地版本，请启动此实例后重新检查。',
+      RELEASE_LIST_FAILED: '无法获取稳定版列表，请稍后重新检查。',
+      RELEASE_LIST_RATE_LIMITED: 'GitHub 请求额度已用尽，请稍后重新检查。',
+      PROJECT_UPGRADE_AUTH_REQUIRED: '更新接口鉴权失败，请检查实例的 WebUI Access Token。',
+      PROJECT_UPGRADE_UNSUPPORTED: '此实例不支持所请求的更新接口。',
+      PROJECT_UPGRADE_REQUEST_FAILED: '实例的更新接口返回错误。',
+      PROJECT_UPGRADE_INVALID_RESPONSE: '实例返回了无法识别的版本或更新进度。',
+      PROJECT_UPGRADE_NO_STABLE_RELEASE: '没有找到可用的稳定版。',
+      PROJECT_UPGRADE_RECHECK: '目标版本已变化或不再适用，请重新检查。',
+      PROJECT_UPGRADE_BUSY: '此实例已有更新任务正在运行。',
+      PROJECT_UPGRADE_FAILED: '实例报告更新失败。',
+      PROJECT_UPGRADE_UNCONFIRMED: '无法确认实例已更新到目标版本；请检查实例状态后再重试。',
+    },
+  },
+  'en-US': {
+    title: 'Update instances', confirmVersion: 'Update the selected instances below to version {version}?',
+    update: 'Update', singleTitle: 'Update instance', confirmSingle: 'Update “{name}” to version {version}?',
+    confirmMultipleVersions: 'Update the selected instances below to their respective target versions?',
+    selectAll: 'Select all eligible instances', close: 'Close', checkAgain: 'Check again', apply: 'Update selected ({count})',
+    version: 'Current version: {current}', versionChange: '{current} → {target}',
+    states: { checking: 'Checking', available: 'Update available', current: 'No update needed', skipped: 'Skipped', running: 'Updating', success: 'Updated', failed: 'Incomplete' },
+    phases: { starting: 'Submitting update…', updating: 'The instance is installing the update…', verifying: 'Waiting for restart and verifying the version…' },
+    errors: {
+      PROJECT_UPGRADE_LOCAL_NOT_RUNNING: 'Start this local instance from the launcher first.',
+      PROJECT_UPGRADE_LOCAL_VERSION_UNKNOWN: 'Could not read the local version. Start this instance and check again.',
+      RELEASE_LIST_FAILED: 'Could not load stable releases. Check again later.',
+      RELEASE_LIST_RATE_LIMITED: 'The GitHub API rate limit was reached. Check again later.',
+      PROJECT_UPGRADE_AUTH_REQUIRED: 'Update authentication failed. Check the instance’s WebUI Access Token.',
+      PROJECT_UPGRADE_UNSUPPORTED: 'This instance does not support the requested update endpoint.',
+      PROJECT_UPGRADE_REQUEST_FAILED: 'The instance’s update endpoint returned an error.',
+      PROJECT_UPGRADE_INVALID_RESPONSE: 'The instance returned an unrecognized version or update status.',
+      PROJECT_UPGRADE_NO_STABLE_RELEASE: 'No stable release was found.',
+      PROJECT_UPGRADE_RECHECK: 'The target version changed or no longer applies. Check for updates again.',
+      PROJECT_UPGRADE_BUSY: 'This instance already has an update in progress.',
+      PROJECT_UPGRADE_FAILED: 'The instance reported an update failure.',
+      PROJECT_UPGRADE_UNCONFIRMED: 'Could not confirm the target version. Check the instance before retrying.',
+    },
+  },
+} as const
+
 export const windowControlsMessages = {
   'zh-CN': { minimize: '最小化', maximize: '最大化', restore: '还原', close: '关闭' },
   'en-US': { minimize: 'Minimize', maximize: 'Maximize', restore: 'Restore', close: 'Close' },

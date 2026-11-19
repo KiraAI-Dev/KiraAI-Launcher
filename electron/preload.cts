@@ -29,6 +29,13 @@ contextBridge.exposeInMainWorld('kiraLauncher', {
     download: (value: { parentPath: string; name: string; requestId: string; releaseTag?: string }) => ipcRenderer.invoke('projects:download', value),
     connectCloud: (value: { name: string; url: string; accessToken?: string }) => ipcRenderer.invoke('projects:connect-cloud', value),
     update: (value: { id: string; name: string; host?: string; port?: number | null; url?: string; accessToken?: string; launchArgs?: string[]; environmentVariables?: Record<string, string> }) => ipcRenderer.invoke('projects:update', value),
+    checkUpgrade: (id: string, refresh?: boolean) => ipcRenderer.invoke('projects:check-upgrade', id, refresh),
+    upgrade: (id: string, targetVersion: string) => ipcRenderer.invoke('projects:upgrade', id, targetVersion),
+    onUpgradeProgress: (listener: (id: string, progress: unknown) => void) => {
+      const handler = (_event: Electron.IpcRendererEvent, id: string, progress: unknown) => listener(id, progress)
+      ipcRenderer.on('projects:upgrade-progress', handler)
+      return () => ipcRenderer.removeListener('projects:upgrade-progress', handler)
+    },
     getAccessToken: (id: string) => ipcRenderer.invoke('projects:get-access-token', id),
     start: (id: string, requestId: string) => ipcRenderer.invoke('projects:start', id, requestId),
     onProgress: (listener: (progress: unknown) => void) => {
