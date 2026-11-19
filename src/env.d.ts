@@ -1,4 +1,6 @@
 type ProjectProgress = import('../electron/types').ProjectProgress
+type ProjectUpgradeCheck = import('../electron/types').ProjectUpgradeCheck
+type ProjectUpgradeProgress = import('../electron/types').ProjectUpgradeProgress
 
 interface LauncherSettings {
   environmentVariables: Record<string, string>
@@ -94,6 +96,9 @@ interface Window {
       download: (value: { parentPath: string; name: string; requestId: string; releaseTag?: string }) => Promise<ManagedProject>
       connectCloud: (value: { name: string; url: string; accessToken?: string }) => Promise<ManagedProject>
       update: (value: { id: string; name: string; host?: string; port?: number | null; url?: string; accessToken?: string; launchArgs?: string[]; environmentVariables?: Record<string, string> }) => Promise<ManagedProject>
+      checkUpgrade: (id: string, refresh?: boolean) => Promise<ProjectUpgradeCheck>
+      upgrade: (id: string, targetVersion: string) => Promise<void>
+      onUpgradeProgress: (listener: (id: string, progress: ProjectUpgradeProgress) => void) => () => void
       getAccessToken: (id: string) => Promise<string>
       start: (id: string, requestId: string) => Promise<void>
       onProgress: (listener: (progress: ProjectProgress) => void) => () => void

@@ -15,6 +15,7 @@ import { registerProjectLogSubscriptions } from './project-log-subscriptions.js'
 import { clearLauncherLog, initializeLauncherLog, readLauncherLog, writeLauncherLog } from './logger.js'
 import { downloadAndRegisterProject as downloadProject } from './project-download.js'
 import { listProjectReleases } from './project-releases.js'
+import { checkManagedProjectUpgrade, invalidateProjectUpgradeCheck, upgradeProject, type ProjectUpgradeTarget } from './project-upgrade.js'
 import { loadProjects, registerProject, sanitizeEnvironmentVariables, sanitizeLaunchArgs, saveProjects, toManagedProject } from './project-store.js'
 import { loadProjectSession, saveProjectSession } from './project-session.js'
 import { defaultSettings, loadSettings, sanitizeSettings, saveSettings } from './settings.js'
@@ -319,6 +320,20 @@ async function getProjectRuntimeDetails(project: StoredProject): Promise<Pick<Ma
   } catch {
     return localVersion ? { version: localVersion } : {}
   }
+}
+
+async function getProjectUpgradeTarget(id: string): Promise<ProjectUpgradeTarget> {
+  const project = (await loadProjects()).find((item) => item.id === id)
+  if (!project) throw new Error('PROJECT_NOT_FOUND')
+  if (project.type === 'cloud') {
+    if (!project.url) throw new Error('CLOUD_URL_INVALID')
+    return { url: project.url, accessToken: decryptAccessToken(project) }
+  }
+  if (!project.projectPath) throw new Error('LOCAL_PROJECT_NOT_FOUND')
+  const localProject = await getLocalProject(project.projectPath)
+  const child = launchedProjects.get(id)
+  if (!child || startingProjects.has(id)) return { installedVersion: localProject.version }
+  return { url: getLocalWebuiUrl(localProject.host, localProject.port ?? 5267), accessToken: await getLocalAccessToken(project.projectPath), processId: child.pid }
 }
 
 async function fetchWithTimeout(url: string, timeoutMs: number, init?: RequestInit): Promise<Response> {
@@ -959,6 +974,7 @@ async function removeProject(id: string): Promise<void> {
   const projects = await loadProjects()
   if (!projects.some((project) => project.id === id)) throw new Error('PROJECT_NOT_FOUND')
   await saveProjects(projects.filter((project) => project.id !== id))
+  invalidateProjectUpgradeCheck(id)
   launchedProjects.delete(id)
   pendingProjectRestores.delete(id)
 }
@@ -1125,6 +1141,24 @@ app.whenReady().then(async () => {
     return toManagedProject(await registerProject({ name: name.trim(), type: 'cloud', url: normalizedUrl, ...tokenDetails }))
   })
   ipcMain.handle('projects:update', (_event, value: unknown) => updateProject(value))
+  ipcMain.handle('projects:check-upgrade', async (_event, id: unknown, refresh: unknown) => {
+    if (typeof id !== 'string') throw new Error('PROJECT_ID_INVALID')
+    const target = await getProjectUpgradeTarget(id)
+    return checkManagedProjectUpgrade(id, target, refresh === true)
+  })
+  ipcMain.handle('projects:upgrade', async (event, id: unknown, targetVersion: unknown) => {
+    if (typeof id !== 'string') throw new Error('PROJECT_ID_INVALID')
+    if (typeof targetVersion !== 'string') throw new Error('PROJECT_UPGRADE_RECHECK')
+    const instance = await getProjectUpgradeTarget(id)
+    if (!('url' in instance)) throw new Error('PROJECT_UPGRADE_LOCAL_NOT_RUNNING')
+    try {
+      await upgradeProject(instance, targetVersion, (progress) => {
+        if (!event.sender.isDestroyed()) event.sender.send('projects:upgrade-progress', id, progress)
+      })
+    } finally {
+      invalidateProjectUpgradeCheck(id)
+    }
+  })
   ipcMain.handle('projects:get-access-token', async (_event, id: unknown) => {
     if (typeof id !== 'string') throw new Error('PROJECT_ID_INVALID')
     const project = (await loadProjects()).find((item) => item.id === id)

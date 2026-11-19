@@ -8,8 +8,9 @@ import WindowTitleBar from './components/WindowTitleBar.vue'
 import { getLogEntries } from './components/log-format'
 import LauncherReleaseNotes from './components/LauncherReleaseNotes.vue'
 import ProjectOperationProgress from './components/ProjectOperationProgress.vue'
+import ProjectBulkUpgrade from './components/ProjectBulkUpgrade.vue'
 import { projectOperationSteps, type ProjectOperation, type ProjectRelease } from '../electron/types'
-import { messages, globalEnvironmentMessages, projectAdvancedSettingsMessages, projectProgressMessages, type Language } from './i18n/messages'
+import { messages, globalEnvironmentMessages, projectAdvancedSettingsMessages, projectBulkUpgradeMessages, projectProgressMessages, type Language } from './i18n/messages'
 import { AddOutline, CloudOutline, CloudUploadOutline, CodeSlashOutline, CubeOutline, DocumentTextOutline, DownloadOutline, FolderOpenOutline, HardwareChipOutline, HomeOutline, InformationCircleOutline, LanguageOutline, LayersOutline, MoonOutline, OpenOutline, PlayOutline, RefreshOutline, RocketOutline, SettingsOutline, StopOutline, SunnyOutline, TrashOutline } from '@vicons/ionicons5'
 
 type ViewKey = 'overview' | 'projects' | 'deployments' | 'environment' | 'logs' | 'settings' | 'about'
@@ -84,6 +85,9 @@ const projectSettingsLaunchArgs = ref('')
 const projectSettingsEnvironmentVariables = ref('')
 const projectSettingsSaving = ref(false)
 const projectsRefreshing = ref(false)
+const showProjectBulkUpgrade = ref(false)
+const singleProjectUpgrade = ref<{ id: string; name: string; check: ProjectUpgradeCheck } | null>(null)
+const projectUpgradeChecks = ref(new Map<string, { check: ProjectUpgradeCheck } | { error: unknown }>())
 const updateChecking = ref(false)
 const updateInstalling = ref(false)
 const updateCheckResult = ref<LauncherUpdateCheck | null>(null)
@@ -191,6 +195,7 @@ const filteredLogEntries = computed(() => getLogEntries(currentLog.value)
   .filter((entry) => selectedLogLevel.value === 'ALL' || entry.level === selectedLogLevel.value))
 const filteredLog = computed(() => filteredLogEntries.value.map((entry) => entry.content).join('\n'))
 const projectTableText = computed(() => t.value.projectTable)
+const projectUpgradeText = computed(() => projectBulkUpgradeMessages[language.value])
 const viewTitle = computed(() => ({ overview: t.value.overview, projects: t.value.projects, deployments: t.value.deployments, environment: t.value.environment, logs: t.value.logs, settings: t.value.settings, about: aboutText.value.menu })[activeView.value])
 const cloudProjectCount = computed(() => managedProjects.value.filter((project) => project.type === 'cloud').length)
 const activeDeploymentCount = computed(() => cloudProjectCount.value + startedProjectIds.value.length)
@@ -204,7 +209,26 @@ const overviewProjectColumns = computed<DataTableColumns<ManagedProject>>(() => 
 const managedProjectColumns = computed<DataTableColumns<ManagedProject>>(() => [
   { title: t.value.project, key: 'name', width: 'clamp(220px, 22vw, 420px)', render: (row) => h('div', { class: 'managed-project-name' }, [h('div', { class: 'managed-project-heading' }, [h('strong', { title: row.name }, row.name), h(NTag, { size: 'small', bordered: false, type: row.type === 'local' ? 'info' : 'success' }, { default: () => row.type === 'local' ? t.value.localType : t.value.cloudType })]), h('small', { title: row.type === 'local' ? row.projectPath : row.url }, row.type === 'local' ? row.projectPath : row.url)]) },
   { title: t.value.status, key: 'status', width: 130, render: (row) => h(NTag, { size: 'small', bordered: false, type: row.type === 'cloud' || startedProjectIds.value.includes(row.id) ? 'success' : 'default' }, { default: () => row.type === 'cloud' ? t.value.connected : startedProjectIds.value.includes(row.id) ? t.value.running : projectTableText.value.stopped }) },
-  { title: projectTableText.value.version, key: 'version', minWidth: 120, render: (row) => row.version ?? '—' },
+  { title: projectTableText.value.version, key: 'version', minWidth: 148, render: (row) => {
+    const result = projectUpgradeChecks.value.get(row.id)
+    const check = result && 'check' in result ? result.check : undefined
+    const version = check?.currentVersion ?? row.version ?? '—'
+    if (!check?.updateAvailable) {
+      return result && 'error' in result ? h('span', { title: getProjectUpgradeErrorMessage(result.error) }, version) : version
+    }
+    const text = projectUpgradeText.value
+    const hint = check.requiresStart ? text.errors.PROJECT_UPGRADE_LOCAL_NOT_RUNNING : undefined
+    return h('div', { class: 'managed-project-version' }, [
+      version,
+      h('span', { title: hint }, [h(NButton, {
+        size: 'tiny',
+        type: 'primary',
+        secondary: true,
+        disabled: Boolean(check.requiresStart || actionInProgress.value || projectsRefreshing.value),
+        onClick: () => { singleProjectUpgrade.value = { id: row.id, name: row.name, check } },
+      }, { default: () => text.update })]),
+    ])
+  } },
   { title: projectTableText.value.port, key: 'port', width: 105, render: (row) => row.type === 'local' ? String(row.port ?? 5267) : '—' },
   { title: projectTableText.value.uptime, key: 'runtimeStartedAt', width: 125, render: (row) => formatRuntimeDuration(row.runtimeStartedAt) },
   { title: projectTableText.value.actions, key: 'actions', width: 196, fixed: 'right', render: (row) => {
@@ -262,6 +286,15 @@ function getErrorMessage(error: unknown) {
   if (["CLOUD_AUTH_CONFIG_INVALID", "CLOUD_LOGIN_FAILED", "CLOUD_OVERVIEW_UNAVAILABLE", "CLOUD_OVERVIEW_INVALID", "CLOUD_VERSION_UNAVAILABLE", "CLOUD_VERSION_INVALID"].includes(code)) return localizedErrors.value.CLOUD_WEBUI_UNAVAILABLE
   if (!(code in localizedErrors.value)) return t.value.operationFailed
   return localizedErrors.value[code as keyof typeof localizedErrors.value]
+}
+
+function getProjectUpgradeErrorMessage(error: unknown) {
+  const message = error instanceof Error ? error.message.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, '') : ''
+  const [code, ...details] = message.split('\n')
+  const errors = projectUpgradeText.value.errors
+  if (Object.prototype.hasOwnProperty.call(errors, code)) return [errors[code as keyof typeof errors], ...details].join('\n')
+  const localized = getErrorMessage(error)
+  return message && localized !== message ? [localized, message].join('\n') : localized
 }
 
 function requireLauncherBridge() {
@@ -884,6 +917,20 @@ watch(activeView, (view) => {
   if (view === 'logs') void refreshLogs()
 })
 
+watch([activeView, managedProjects, startedProjectIds], ([view, projects], _previous, onCleanup) => {
+  projectUpgradeChecks.value.clear()
+  const api = window.kiraLauncher?.projects
+  if (view !== 'projects' || !api) return
+  let current = true
+  onCleanup(() => { current = false })
+  for (const { id } of projects) {
+    void api.checkUpgrade(id).then(
+      (check) => { if (current) projectUpgradeChecks.value.set(id, { check }) },
+      (error: unknown) => { if (current) projectUpgradeChecks.value.set(id, { error }) },
+    )
+  }
+})
+
 let runtimeTimer: number | undefined
 let removeUpdateStatusListener: (() => void) | undefined
 let removeProjectChangeListener: (() => void) | undefined
@@ -943,7 +990,7 @@ onBeforeUnmount(() => {
               <n-grid-item span="3 m:1"><n-card :title="t.quickStart" size="small"><n-space vertical :size="12"><n-button block @click="activeView = 'environment'"><template #icon><n-icon :component="HardwareChipOutline" /></template>{{ t.installEnvironment }}</n-button><n-button block :disabled="actionInProgress" @click="openNewProjectModal('local')"><template #icon><n-icon :component="FolderOpenOutline" /></template>{{ t.openLocal }}</n-button><n-button block :disabled="actionInProgress" @click="openNewProjectModal('cloud')"><template #icon><n-icon :component="CloudUploadOutline" /></template>{{ t.connectCloud }}</n-button></n-space></n-card></n-grid-item>
             </n-grid>
           </n-space></template>
-          <template v-else-if="activeView === 'projects'"><n-space vertical :size="24"><div class="page-heading"><div><h1>{{ t.projects }}</h1><p>{{ t.manageProjects }}</p></div><n-space><n-button :loading="projectsRefreshing" @click="refreshProjectRuntime"><template #icon><n-icon :component="RefreshOutline" /></template>{{ t.refresh }}</n-button><n-button type="primary" @click="openNewProjectModal()"><template #icon><n-icon :component="AddOutline" /></template>{{ t.newProject }}</n-button></n-space></div><n-alert v-if="projectError" type="error" :title="t.operationFailed" closable @close="projectError = ''">{{ projectError }}</n-alert><n-card><n-empty v-if="!managedProjects.length" :description="t.noManagedProjects"><template #extra><n-text depth="3">{{ t.noManagedProjectsSub }}</n-text></template><n-button type="primary" @click="openNewProjectModal()">{{ t.newProject }}</n-button></n-empty><n-data-table v-else class="managed-project-table" :columns="managedProjectColumns" :data="managedProjects" table-layout="fixed" :bordered="false" :single-line="false" :scroll-x="1000" /></n-card></n-space></template>
+          <template v-else-if="activeView === 'projects'"><n-space vertical :size="24"><div class="page-heading"><div><h1>{{ t.projects }}</h1><p>{{ t.manageProjects }}</p></div><n-space><n-button :loading="projectsRefreshing" @click="refreshProjectRuntime"><template #icon><n-icon :component="RefreshOutline" /></template>{{ t.refresh }}</n-button><n-button :disabled="actionInProgress || projectsRefreshing || !managedProjects.length" @click="showProjectBulkUpgrade = true"><template #icon><n-icon :component="DownloadOutline" /></template>{{ projectBulkUpgradeMessages[language].title }}</n-button><n-button type="primary" @click="openNewProjectModal()"><template #icon><n-icon :component="AddOutline" /></template>{{ t.newProject }}</n-button></n-space></div><n-alert v-if="projectError" type="error" :title="t.operationFailed" closable @close="projectError = ''">{{ projectError }}</n-alert><n-card><n-empty v-if="!managedProjects.length" :description="t.noManagedProjects"><template #extra><n-text depth="3">{{ t.noManagedProjectsSub }}</n-text></template><n-button type="primary" @click="openNewProjectModal()">{{ t.newProject }}</n-button></n-empty><n-data-table v-else class="managed-project-table" :columns="managedProjectColumns" :data="managedProjects" table-layout="fixed" :bordered="false" :single-line="false" :scroll-x="1000" /></n-card></n-space></template>
           <template v-else-if="activeView === 'environment'"><n-space vertical :size="24" class="environment-page"><div class="page-heading"><div><h1>{{ t.environment }}</h1><p>{{ t.environmentSub }}</p></div></div><n-text depth="3">{{ t.environmentPreferences.current }}{{ t.environmentPreferences[environmentMode] }}</n-text><n-text v-if="environmentMode === 'system'" depth="3">{{ t.environmentPreferences.globalHint }}</n-text><n-alert v-if="environmentError" type="error" :title="t.operationFailed" closable @close="environmentError = ''">{{ environmentError }}</n-alert><n-grid :cols="3" :x-gap="16" :y-gap="16" responsive="screen" item-responsive><n-grid-item v-for="tool in environmentTools" :key="tool.name" span="3 m:1"><n-card size="small" class="environment-card"><div class="environment-card-content"><n-space justify="space-between" align="center"><n-space align="center"><img class="environment-tool-icon" :src="environmentIcons[tool.name]" alt="" width="24" height="24" /><strong>{{ tool.name }}</strong></n-space><n-tag :type="tool.installed ? 'success' : 'error'" size="small" :bordered="false">{{ tool.installed ? t.installed : t.notInstalled }}</n-tag></n-space><n-space v-if="tool.installed" align="center" :size="8"><n-text depth="3">{{ tool.version || '—' }}</n-text><n-tag v-if="tool.installed && tool.source" :type="tool.source === 'managed' ? 'info' : 'default'" size="small" :bordered="false">{{ t.environmentSources[tool.source] }}</n-tag></n-space><div v-if="tool.installed" class="environment-path"><span>{{ t.environmentPath }}</span><code>{{ tool.path || '—' }}</code></div><div v-if="!tool.installed" class="environment-actions"><n-select v-model:value="environmentSelectedVersions[tool.name]" :options="environmentVersionOptions(tool)" :disabled="tool.installed || environmentMode === 'system' || environmentModeSaving || environmentChecking || environmentInstalling !== null" size="small" /><n-button type="primary" size="small" :loading="isEnvironmentInstalling(tool)" :disabled="tool.installed || environmentMode === 'system' || environmentModeSaving || environmentChecking || environmentInstalling !== null" @click="installEnvironmentTool(tool)">{{ tool.installed ? t.installed : environmentActionsText.install }}</n-button></div><n-button v-if="tool.managedInstalled" type="error" secondary size="small" :disabled="environmentChecking || environmentModeSaving || environmentInstalling !== null" @click="confirmEnvironmentUninstall(tool)">{{ environmentActionsText.uninstall }}</n-button></div></n-card></n-grid-item></n-grid></n-space></template>
           <template v-else-if="activeView === 'logs'">
             <div class="logs-page">
@@ -998,6 +1045,7 @@ onBeforeUnmount(() => {
         </n-layout-content>
       </n-layout>
       </n-layout>
+      <ProjectBulkUpgrade :show="showProjectBulkUpgrade || singleProjectUpgrade !== null" :projects="managedProjects" :single-project="singleProjectUpgrade ?? undefined" :language="language" :format-error="getProjectUpgradeErrorMessage" @close="showProjectBulkUpgrade = false; singleProjectUpgrade = null" @checked="(id, result) => projectUpgradeChecks.set(id, result)" @finished="refreshManagedProjects" />
       <n-modal v-model:show="showNewProjectModal" preset="card" :title="projectCreationMode === 'download' ? progressText.downloadTitle : t.newProjectTitle" class="project-modal" content-scrollable :mask-closable="!actionInProgress" :closable="!actionInProgress" :close-on-esc="!actionInProgress">
       <n-space v-if="projectCreationMode === null" vertical :size="12"><n-text depth="3">{{ t.chooseProjectMethod }}</n-text><div class="project-source-grid"><button class="project-source-option" type="button" @click="projectCreationMode = 'local'"><n-icon :component="FolderOpenOutline" :color="activePalette.primary" size="26" /><strong>{{ t.localProject }}</strong><span>{{ t.localProjectSub }}</span></button><button class="project-source-option" type="button" @click="openDownloadProject"><n-icon :component="DownloadOutline" :color="activePalette.primary" size="26" /><strong>{{ t.downloadProject }}</strong><span>{{ t.downloadProjectSub }}</span></button><button class="project-source-option" type="button" @click="projectCreationMode = 'cloud'"><n-icon :component="CloudOutline" :color="activePalette.primary" size="26" /><strong>{{ t.cloudProject }}</strong><span>{{ t.cloudProjectSub }}</span></button></div></n-space>
       <n-space v-else-if="projectCreationMode === 'local'" vertical :size="18"><div><strong>{{ t.selectLocalProject }}</strong><p class="modal-hint">{{ t.selectLocalHint }}</p></div><n-button block @click="chooseLocalProject"><template #icon><n-icon :component="FolderOpenOutline" /></template>{{ t.selectLocalProject }}</n-button><n-alert v-if="selectedLocalProject" type="success" :show-icon="false">{{ t.selectedDirectory }}：{{ selectedLocalProject.projectPath }}</n-alert><n-alert v-if="projectError" type="error" :show-icon="false">{{ projectError }}</n-alert><n-space justify="end"><n-button :disabled="actionInProgress" @click="projectCreationMode = null">{{ t.back }}</n-button><n-button type="primary" :disabled="!selectedLocalProject" :loading="actionInProgress" @click="addLocalProject">{{ t.manage }}</n-button></n-space></n-space>

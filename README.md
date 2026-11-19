@@ -56,6 +56,8 @@ In **Settings → System behavior**, enable **Restore local instances on next la
 
 The default local WebUI port is `5267`. Stop a project before changing its port.
 
+Use **Update instances** on the Projects page to check for and install the latest stable KiraAI release on selected instances in parallel. Stopped local instances can be checked, but must be started from the launcher to install an update. Cloud instances must be reachable and allow authenticated access to the update API. Back up configuration and data before updating. The launcher reports success only after the instance is healthy and reports the target version.
+
 ## 🧪 Development
 
 ### Requirements
